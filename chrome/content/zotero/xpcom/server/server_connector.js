@@ -23,6 +23,7 @@
     ***** END LICENSE BLOCK *****
 */
 const CONNECTOR_API_VERSION = 3;
+const TRANSLATOR_PREFS_VERSION = 1;
 
 Zotero.Server.Connector = {
 	_waitingForSelection: {},
@@ -1105,11 +1106,23 @@ Zotero.Server.Connector.Ping.prototype = {
 			}
 			let translatorsHash = await Zotero.Translators.getTranslatorsHash(false);
 			let sortedTranslatorHash = await Zotero.Translators.getTranslatorsHash(true);
+			let translatorPrefs = {};
+			let translatorPrefsBranch = Services.prefs.getBranch(
+				ZOTERO_CONFIG.PREF_BRANCH + 'translators.'
+			);
+			for (let key of translatorPrefsBranch.getChildList('', {})) {
+				let value = Zotero.Prefs.get('translators.' + key);
+				if (['boolean', 'number', 'string'].includes(typeof value)) {
+					translatorPrefs[key] = value;
+				}
+			}
 			
 			let response = {
 				prefs: {
 					automaticSnapshots: Zotero.Prefs.get('automaticSnapshots'),
 					downloadAssociatedFiles: Zotero.Prefs.get("downloadAssociatedFiles"),
+					translatorPrefsVersion: TRANSLATOR_PREFS_VERSION,
+					translatorPrefs,
 					supportsAttachmentUpload: true,
 					supportsTagsAutocomplete: true,
 					googleDocsAddNoteEnabled: true,

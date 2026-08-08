@@ -91,6 +91,33 @@ describe("Connector Server", function () {
 			);
 			assert.include(response, 'Zotero is running');
 		});
+
+		it("should return translator preferences to the Connector", async function () {
+			let oldAttachSupplementary = Zotero.Prefs.get('translators.attachSupplementary');
+			try {
+				Zotero.Prefs.set('translators.attachSupplementary', true);
+				Zotero.Prefs.set('translators.SIFix.testNumber', 2);
+				let { response } = await httpRequest(
+					'POST',
+					connectorServerPath + "/connector/ping",
+					{
+						headers: {
+							"Content-Type": "application/json"
+						},
+						body: '{}'
+					}
+				);
+				let data = JSON.parse(response);
+				assert.equal(data.prefs.translatorPrefsVersion, 1);
+				assert.isTrue(data.prefs.translatorPrefs.attachSupplementary);
+				assert.equal(data.prefs.translatorPrefs['SIFix.testNumber'], 2);
+				assert.notProperty(data.prefs.translatorPrefs, 'downloadAssociatedFiles');
+			}
+			finally {
+				Zotero.Prefs.set('translators.attachSupplementary', oldAttachSupplementary);
+				Zotero.Prefs.clear('translators.SIFix.testNumber');
+			}
+		});
 	});
 
 	describe('/connector/getTranslatorCode', function () {
