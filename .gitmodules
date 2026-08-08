@@ -1,6 +1,6 @@
 [submodule "translators"]
 	path = translators
-	url = https://github.com/zotero/translators.git
+	url = https://github.com/louishess/translators.git
 	branch = master
 [submodule "chrome/content/zotero/locale/csl"]
 	path = chrome/content/zotero/locale/csl
