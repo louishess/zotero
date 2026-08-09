@@ -67,6 +67,11 @@ class ReaderInstance {
 		this._pendingWriteStateTimeout = null;
 		this._pendingWriteStateFunction = null;
 		this._readAloudGuidancePanel = null;
+		this._fileAnnotationMode = false;
+		this._fileAnnotationSources = new Map();
+		this._fileAnnotations = new Map();
+		this._fileAnnotationFileToken = null;
+		this._fileAnnotationReadOnly = false;
 
 		this._type = this._item.attachmentReaderType;
 		if (!this._type) {
@@ -161,6 +166,158 @@ class ReaderInstance {
 		}
 	}
 
+	_promptToStoreAnnotationsInFile() {
+		let ps = Services.prompt;
+		let buttonFlags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
+			+ ps.BUTTON_POS_1 * ps.BUTTON_TITLE_CANCEL;
+		let index = ps.confirmEx(
+			null,
+			Zotero.ftl.formatValueSync('reader-prompt-store-in-pdf-title'),
+			Zotero.ftl.formatValueSync('reader-prompt-store-in-pdf-text'),
+			buttonFlags,
+			Zotero.getString('general.continue'),
+			null, null, null, {}
+		);
+		return !index;
+	}
+
+	_prepareFileAnnotations(annotations) {
+		let existingIDsBySource = new Map();
+		for (let [id, source] of this._fileAnnotationSources) {
+			existingIDsBySource.set(JSON.stringify(source), id);
+		}
+		this._fileAnnotationSources.clear();
+		this._fileAnnotations.clear();
+		return annotations.map(annotation => {
+			annotation = JSON.parse(JSON.stringify(annotation));
+			if (!annotation.id) {
+				annotation.id = existingIDsBySource.get(JSON.stringify(annotation.source))
+					|| Zotero.DataObjectUtilities.generateKey();
+			}
+			if (annotation.source) {
+				this._fileAnnotationSources.set(annotation.id, annotation.source);
+			}
+			delete annotation.source;
+			delete annotation.transferable;
+			annotation.isExternal = false;
+			annotation.readOnly = false;
+			annotation.tags = annotation.tags || [];
+			this._fileAnnotations.set(annotation.id, annotation);
+			return annotation;
+		});
+	}
+
+	async _loadFileAnnotations({ migrate = false } = {}) {
+		let result = migrate
+			? await Zotero.PDFWorker.migrateAnnotationsToFile(this.itemID, true)
+			: await Zotero.PDFWorker.readAnnotations(this.itemID, true);
+		this._fileAnnotationFileToken = result.fileToken;
+		return this._prepareFileAnnotations(result.annotations);
+	}
+
+	async _refreshFileAnnotations() {
+		let oldIDs = [...this._fileAnnotations.keys()];
+		let { annotations, fileToken } = await Zotero.PDFWorker.readAnnotations(this.itemID, true);
+		this._fileAnnotationFileToken = fileToken;
+		let prepared = this._prepareFileAnnotations(annotations);
+		let newIDs = new Set(prepared.map(annotation => annotation.id));
+		let deletions = oldIDs.filter(id => !newIDs.has(id));
+		if (prepared.length) {
+			this._internalReader.setAnnotations(
+				Components.utils.cloneInto(prepared, this._iframeWindow)
+			);
+		}
+		if (deletions.length) this.unsetAnnotations(deletions);
+		Zotero.Reader.broadcastFileAnnotationChanges(this, {
+			upserts: prepared,
+			deletions,
+			fileToken,
+			sources: Object.fromEntries(this._fileAnnotationSources)
+		});
+	}
+
+	async _saveFileAnnotations(annotations) {
+		let imageOnly = annotations.every(annotation =>
+			Object.keys(annotation).length === 2 && annotation.id && annotation.image
+		);
+		if (imageOnly) {
+			for (let annotation of annotations) {
+				let existing = this._fileAnnotations.get(annotation.id);
+				if (existing) existing.image = annotation.image;
+			}
+			return;
+		}
+
+		let upserts = annotations.map(annotation => ({
+			annotation: JSON.parse(JSON.stringify(annotation)),
+			source: this._fileAnnotationSources.get(annotation.id)
+		}));
+		let result = await Zotero.PDFWorker.applyAnnotationChanges(
+			this.itemID,
+			{ upserts },
+			this._fileAnnotationFileToken,
+			true
+		);
+		this._fileAnnotationFileToken = result.fileToken;
+		for (let annotation of annotations) {
+			let plainAnnotation = JSON.parse(JSON.stringify(annotation));
+			this._fileAnnotations.set(annotation.id, plainAnnotation);
+			this._fileAnnotationSources.set(annotation.id, result.sources[annotation.id]);
+		}
+		Zotero.Reader.broadcastFileAnnotationChanges(this, {
+			upserts: annotations,
+			deletions: [],
+			...result
+		});
+	}
+
+	async _deleteFileAnnotations(ids) {
+		let deletions = ids.map(id => this._fileAnnotationSources.get(id));
+		if (deletions.some(source => !source)) {
+			throw new Error('Cannot locate annotation in PDF file');
+		}
+		let result = await Zotero.PDFWorker.applyAnnotationChanges(
+			this.itemID,
+			{ deletions },
+			this._fileAnnotationFileToken,
+			true
+		);
+		this._fileAnnotationFileToken = result.fileToken;
+		for (let id of ids) {
+			this._fileAnnotationSources.delete(id);
+			this._fileAnnotations.delete(id);
+		}
+		Zotero.Reader.broadcastFileAnnotationChanges(this, {
+			upserts: [],
+			deletions: ids,
+			...result
+		});
+	}
+
+	receiveFileAnnotationChanges({ upserts, deletions, fileToken, sources }) {
+		if (!this._fileAnnotationMode) return;
+		this._fileAnnotationFileToken = fileToken;
+		for (let annotation of upserts) {
+			annotation = JSON.parse(JSON.stringify(annotation));
+			this._fileAnnotations.set(annotation.id, annotation);
+			this._fileAnnotationSources.set(annotation.id, sources[annotation.id]);
+		}
+		for (let id of deletions) {
+			this._fileAnnotations.delete(id);
+			this._fileAnnotationSources.delete(id);
+		}
+		if (this._internalReader) {
+			if (upserts.length) {
+				this._internalReader.setAnnotations(
+					Components.utils.cloneInto(upserts, this._iframeWindow)
+				);
+			}
+			if (deletions.length) {
+				this.unsetAnnotations(deletions);
+			}
+		}
+	}
+
 	async _open({ state, location, secondViewState, preview }) {
 		// Set `ReaderTab` title as fast as possible
 		this.updateTitle();
@@ -169,11 +326,36 @@ class ReaderInstance {
 
 		let data = await this._getData();
 		let annotationItems = this._item.getAnnotations();
-		let annotations = (await Promise.all(annotationItems.map(x => this._getAnnotation(x)))).filter(x => x);
+		let annotations;
+		let fileAnnotationError;
+		if (!preview && await Zotero.PDFWorker.canUseFileAnnotations(this._item)) {
+			let hasInternalAnnotations = annotationItems.some(item => !item.annotationIsExternal);
+			if (!hasInternalAnnotations || this._promptToStoreAnnotationsInFile()) {
+				this._fileAnnotationMode = true;
+				try {
+					annotations = await this._loadFileAnnotations({ migrate: annotationItems.length > 0 });
+				}
+				catch (e) {
+					Zotero.logError(e);
+					fileAnnotationError = e;
+					this._fileAnnotationReadOnly = true;
+					annotations = [];
+				}
+				annotationItems = [];
+			}
+			else {
+				await Zotero.Reader.triggerAnnotationsImportCheck(this.itemID, { forceLegacy: true });
+				annotationItems = this._item.getAnnotations();
+			}
+		}
+		if (!annotations) {
+			annotations = (await Promise.all(annotationItems.map(x => this._getAnnotation(x)))).filter(x => x);
+		}
 
 		// TODO: Remove after some time
 		// Migrate Mendeley colors to Zotero PDF reader colors
-		let migrated = await this.migrateMendeleyColors(this._item.libraryID, annotations);
+		let migrated = !this._fileAnnotationMode
+			&& await this.migrateMendeleyColors(this._item.libraryID, annotations);
 		if (migrated) {
 			annotationItems = this._item.getAnnotations();
 			annotations = (await Promise.all(annotationItems.map(x => this._getAnnotation(x)))).filter(x => x);
@@ -238,7 +420,7 @@ class ReaderInstance {
 			primaryViewState: state,
 			secondaryViewState: secondViewState,
 			location,
-			readOnly: this._isReadOnly(),
+			readOnly: this._isReadOnly() || this._fileAnnotationReadOnly,
 			preview,
 			authorName: this._item.library.libraryType === 'group' ? Zotero.Users.getCurrentName() : '',
 			showContextPaneToggle: this._showContextPaneToggle,
@@ -286,6 +468,10 @@ class ReaderInstance {
 				let attachment = Zotero.Items.get(this.itemID);
 				let notifierQueue = new Zotero.Notifier.Queue();
 				try {
+					if (this._fileAnnotationMode) {
+						await this._saveFileAnnotations(annotations);
+						return;
+					}
 					for (let annotation of annotations) {
 						annotation.key = annotation.id;
 						let saveOptions = {
@@ -337,6 +523,10 @@ class ReaderInstance {
 				let libraryID = attachment.libraryID;
 				let notifierQueue = new Zotero.Notifier.Queue();
 				try {
+					if (this._fileAnnotationMode) {
+						await this._deleteFileAnnotations(keys);
+						return;
+					}
 					for (let key of keys) {
 						let annotation = Zotero.Items.getByLibraryAndKey(libraryID, key);
 						// Make sure the annotation actually belongs to the current PDF
@@ -348,6 +538,7 @@ class ReaderInstance {
 				}
 				catch (e) {
 					this.displayError(e);
+					this._internalReader.setReadOnly(true);
 					throw e;
 				}
 				finally {
@@ -368,6 +559,11 @@ class ReaderInstance {
 			},
 			onOpenTagsPopup: (id, x, y) => {
 				let key = id;
+				if (this._fileAnnotationMode) {
+					let item = this._getFileAnnotationTagItem(key);
+					if (item) this._openTagsPopup(item, x, y);
+					return;
+				}
 				let attachment = Zotero.Items.get(this._item.id);
 				let libraryID = attachment.libraryID;
 				let annotation = Zotero.Items.getByLibraryAndKey(libraryID, key);
@@ -540,24 +736,32 @@ class ReaderInstance {
 				this._internalReader.freeze();
 				try {
 					await Zotero.PDFWorker.rotatePages(this._item.id, pageIndexes, degrees, true);
+					await this.reload();
+					if (this._fileAnnotationMode) await this._refreshFileAnnotations();
 				}
 				catch (e) {
 					this.displayError(e);
+					if (this._fileAnnotationMode) this._internalReader.setReadOnly(true);
 				}
-				await this.reload();
-				this._internalReader.unfreeze();
+				finally {
+					this._internalReader.unfreeze();
+				}
 			},
 			onDeletePages: async (pageIndexes) => {
 				if (this._promptToDeletePages(pageIndexes.length)) {
 					this._internalReader.freeze();
 					try {
 						await Zotero.PDFWorker.deletePages(this._item.id, pageIndexes, true);
+						await this.reload();
+						if (this._fileAnnotationMode) await this._refreshFileAnnotations();
 					}
 					catch (e) {
 						this.displayError(e);
+						if (this._fileAnnotationMode) this._internalReader.setReadOnly(true);
 					}
-					await this.reload();
-					this._internalReader.unfreeze();
+					finally {
+						this._internalReader.unfreeze();
+					}
 				}
 			},
 			onToggleContextPane: () => {
@@ -642,6 +846,9 @@ class ReaderInstance {
 				setTimeout(() => this._openReadAloudVoicesDialog({ lang, tier, ftl }));
 			},
 		}, this._iframeWindow, { cloneFunctions: true }));
+		if (fileAnnotationError) {
+			this.displayError(fileAnnotationError);
+		}
 
 		this._resolveInitPromise();
 		// Set title once again, because `ReaderWindow` isn't loaded the first time
@@ -1257,6 +1464,53 @@ class ReaderInstance {
 		let stroke = selected ? '%23555' : 'transparent';
 		let fill = '%23' + color.slice(1);
 		return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><rect shape-rendering="geometricPrecision" fill="${fill}" stroke-width="2" x="2" y="2" stroke="${stroke}" width="12" height="12" rx="3"/></svg>`;
+	}
+
+	_getFileAnnotationTagItem(key) {
+		let reader = this;
+		let annotation = this._fileAnnotations.get(key);
+		if (!annotation) return null;
+		let tags = (annotation.tags || []).map(tag => ({
+			tag: tag.name || tag.tag || tag,
+			type: 0
+		}));
+		return {
+			id: -1,
+			libraryID: this._item.libraryID,
+			isFeedItem: false,
+			getTags() {
+				return JSON.parse(JSON.stringify(tags));
+			},
+			addTag(tag, type = 0) {
+				if (!tags.some(x => x.tag === tag)) tags.push({ tag, type });
+			},
+			removeTag(tag) {
+				tags = tags.filter(x => x.tag !== tag);
+			},
+			replaceTag(oldTag, newTag) {
+				this.removeTag(oldTag);
+				this.addTag(newTag);
+			},
+			setTags(newTags) {
+				tags = newTags.map(tag => ({
+					tag: tag.tag || tag.name || tag,
+					type: tag.type || 0
+				}));
+			},
+			async saveTx() {
+				let current = reader._fileAnnotations.get(key);
+				if (!current) throw new Error('Annotation no longer exists');
+				let updated = {
+					...current,
+					tags: tags.map(tag => ({ name: tag.tag })),
+					dateModified: new Date().toISOString()
+				};
+				await reader._saveFileAnnotations([updated]);
+				reader._internalReader.setAnnotations(
+					Components.utils.cloneInto([updated], reader._iframeWindow)
+				);
+			}
+		};
 	}
 
 	_openTagsPopup(item, x, y) {
@@ -2635,6 +2889,7 @@ class Reader {
 		this._readers = [];
 		this._notifierID = Zotero.Notifier.registerObserver(this, ['item', 'setting', 'tab', 'api-key'], 'reader');
 		this._registeredListeners = [];
+		this._legacyFileAnnotationImportChecks = new Set();
 		this.onChangeSidebarWidth = null;
 		this.onToggleSidebar = null;
 
@@ -2851,6 +3106,17 @@ class Reader {
 	getByTabID(tabID) {
 		return this._readers.find(r => (r instanceof ReaderTab) && r.tabID === tabID);
 	}
+
+	broadcastFileAnnotationChanges(sourceReader, changes) {
+		changes = JSON.parse(JSON.stringify(changes));
+		for (let reader of this._readers) {
+			if (reader !== sourceReader
+				&& reader.itemID === sourceReader.itemID
+				&& reader._fileAnnotationMode) {
+				reader.receiveFileAnnotationChanges(changes);
+			}
+		}
+	}
 	
 	getWindowStates() {
 		return this._readers
@@ -2882,7 +3148,9 @@ class Reader {
 		}
 
 		this._loadSidebarState();
-		this.triggerAnnotationsImportCheck(itemID);
+		if (!(await Zotero.PDFWorker.canUseFileAnnotations(item))) {
+			await this.triggerAnnotationsImportCheck(itemID);
+		}
 		let reader;
 		// If duplicating is not allowed, and no reader instance is loaded for itemID,
 		// try to find an unloaded tab and select it. Zotero.Reader.open will then be called again
@@ -2994,7 +3262,7 @@ class Reader {
 	 * @param {Integer} itemID Attachment item id
 	 * @returns {Promise}
 	 */
-	async triggerAnnotationsImportCheck(itemID) {
+	async triggerAnnotationsImportCheck(itemID, { forceLegacy = false } = {}) {
 		let item = await Zotero.Items.getAsync(itemID);
 		if (!item.isPDFAttachment()
 			|| !item.isEditable()
@@ -3003,9 +3271,21 @@ class Reader {
 		) {
 			return;
 		}
+		// File-backed readers own supported PDF annotations directly. Importing them here
+		// would recreate database annotation items after every Zotero-authored file write.
+		if (!forceLegacy && await Zotero.PDFWorker.canUseFileAnnotations(item)) {
+			return;
+		}
 		let mtime = await item.attachmentModificationTime;
-		if (item.attachmentLastProcessedModificationTime < Math.floor(mtime / 1000)) {
+		let mtimeSeconds = Math.floor(mtime / 1000);
+		let checkKey = `${itemID}:${mtimeSeconds}`;
+		let shouldCheckFileAfterDisabling = !Zotero.Prefs.get('reader.annotations.saveToFile')
+			&& !item.getAnnotations().length
+			&& !this._legacyFileAnnotationImportChecks.has(checkKey);
+		if (item.attachmentLastProcessedModificationTime < mtimeSeconds
+			|| shouldCheckFileAfterDisabling) {
 			await Zotero.PDFWorker.import(itemID, true);
+			this._legacyFileAnnotationImportChecks.add(checkKey);
 		}
 	}
 	
