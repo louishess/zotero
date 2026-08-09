@@ -1522,8 +1522,9 @@ class EditorInstance {
 		if (!annotations.length) {
 			throw new Error("No annotations provided");
 		}
+		let isJSONAnnotation = annotation => !(annotation instanceof Zotero.Item);
 		
-		for (let annotation of annotations) {
+		for (let annotation of annotations.filter(annotation => !isJSONAnnotation(annotation))) {
 			if (annotation.annotationType === 'image'
 				&& !(await Zotero.Annotations.hasCacheImage(annotation))) {
 				try {
@@ -1537,8 +1538,11 @@ class EditorInstance {
 		}
 
 		let note = new Zotero.Item('note');
+		let firstAttachment = isJSONAnnotation(annotations[0])
+			? Zotero.Items.get(annotations[0].attachmentItemID)
+			: Zotero.Items.get(annotations[0].parentID);
 		if (!noSave) {
-			note.libraryID = annotations[0].libraryID;
+			note.libraryID = firstAttachment.libraryID;
 			if (parentID) {
 				note.parentID = parentID;
 			}
@@ -1550,15 +1554,33 @@ class EditorInstance {
 		let editorInstance = new EditorInstance();
 		editorInstance._item = note;
 		let jsonAnnotations = [];
+		let attachmentItems = [];
 		for (let annotation of annotations) {
-			let attachmentItem = Zotero.Items.get(annotation.parentID);
-			let jsonAnnotation = await Zotero.Annotations.toJSON(annotation);
+			let annotationIsJSON = isJSONAnnotation(annotation);
+			let attachmentItem = annotationIsJSON
+				? Zotero.Items.get(annotation.attachmentItemID)
+				: Zotero.Items.get(annotation.parentID);
+			let jsonAnnotation = annotationIsJSON
+				? JSON.parse(JSON.stringify(annotation))
+				: await Zotero.Annotations.toJSON(annotation);
 			if (noComments) {
 				jsonAnnotation.comment = null;
 			}
 			jsonAnnotation.attachmentItemID = attachmentItem.id;
-			jsonAnnotation.id = annotation.key;
+			jsonAnnotation.id = annotationIsJSON
+				? (jsonAnnotation.id || Zotero.DataObjectUtilities.generateKey())
+				: annotation.key;
+			if (annotationIsJSON
+				&& ['image', 'ink'].includes(jsonAnnotation.type)
+				&& !jsonAnnotation.image) {
+				jsonAnnotation.image = await Zotero.PDFWorker.renderAnnotationImage(
+					attachmentItem.id,
+					jsonAnnotation,
+					true
+				);
+			}
 			jsonAnnotations.push(jsonAnnotation);
+			attachmentItems.push(attachmentItem);
 		}
 
 		let html = '';
@@ -1584,21 +1606,21 @@ class EditorInstance {
 		// Group annotations per attachment
 		let groups = [];
 		for (let i = 0; i < annotations.length; i++) {
-			let annotation = annotations[i];
 			let jsonAnnotation = jsonAnnotations[i];
-			let parentParentID = annotation.parentItem.parentID;
-			let parentID = annotation.parentID;
+			let attachmentItem = attachmentItems[i];
+			let parentParentID = attachmentItem.parentID;
+			let annotationParentID = attachmentItem.id;
 			if (groups.length) {
 				if (parentParentID !== lastParentParentID) {
 					// Multiple top level regular items detected, allow including their titles
 					multipleParentParent = true;
 				}
 			}
-			if (!groups.length || parentID !== lastParentID) {
+			if (!groups.length || annotationParentID !== lastParentID) {
 				groups.push({
-					parentTitle: annotation.parentItem.getDisplayTitle(),
+					parentTitle: attachmentItem.getDisplayTitle(),
 					parentParentID,
-					parentParentTitle: annotation.parentItem.parentItem && annotation.parentItem.parentItem.getDisplayTitle(),
+					parentParentTitle: attachmentItem.parentItem && attachmentItem.parentItem.getDisplayTitle(),
 					jsonAnnotations: [jsonAnnotation]
 				});
 			}
@@ -1607,7 +1629,7 @@ class EditorInstance {
 				group.jsonAnnotations.push(jsonAnnotation);
 			}
 			lastParentParentID = parentParentID;
-			lastParentID = parentID;
+			lastParentID = annotationParentID;
 		}
 		let citationItems = [];
 		lastParentParentID = null;
@@ -1633,7 +1655,7 @@ class EditorInstance {
 		let schemaVersion = 9;
 		// If using underline annotations, increase schema version number
 		// TODO: Can be removed once most clients support schema version 10
-		if (schemaVersion === 9 && annotations.some(x => x.annotationType === 'underline')) {
+		if (schemaVersion === 9 && jsonAnnotations.some(x => x.type === 'underline')) {
 			schemaVersion = 10;
 		}
 		html = `<div data-citation-items="${citationItems}" data-schema-version="${schemaVersion}">${html}</div>`;

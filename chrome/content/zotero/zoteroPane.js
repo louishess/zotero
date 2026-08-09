@@ -4912,6 +4912,32 @@ var ZoteroPane = new function () {
 		return item.isPDFAttachment()
 			|| (item.isEPUBAttachment() || item.isSnapshotAttachment()) && item.getAnnotations().length;
 	}
+
+	async function getAnnotationsForNote(attachment) {
+		let storedAnnotations = attachment.getAnnotations();
+		let hasInternalAnnotations = storedAnnotations.some(annotation => !annotation.annotationIsExternal);
+		if (attachment.isPDFAttachment()
+			&& !hasInternalAnnotations
+			&& await Zotero.PDFWorker.canUseFileAnnotations(attachment)) {
+			let { annotations } = storedAnnotations.length
+				? await Zotero.PDFWorker.migrateAnnotationsToFile(attachment.id, true)
+				: await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			return annotations.map(annotation => {
+				let json = {
+					...annotation,
+					id: annotation.id || Zotero.DataObjectUtilities.generateKey(),
+					attachmentItemID: attachment.id
+				};
+				delete json.source;
+				delete json.transferable;
+				return json;
+			});
+		}
+		if (attachment.isPDFAttachment()) {
+			await Zotero.PDFWorker.import(attachment.id, true);
+		}
+		return attachment.getAnnotations().filter(annotation => annotation.annotationType !== 'ink');
+	}
 	
 	
 	this.openPreferences = function (paneID) {
@@ -6308,10 +6334,7 @@ var ZoteroPane = new function () {
 			this.displayCannotEditLibraryMessage();
 			return;
 		}
-		if (attachment.isPDFAttachment()) {
-			await Zotero.PDFWorker.import(attachment.id, true);
-		}
-		var annotations = attachment.getAnnotations().filter(x => x.annotationType != 'ink');
+		var annotations = await getAnnotationsForNote(attachment);
 		if (!annotations.length) {
 			return;
 		}
@@ -6381,15 +6404,12 @@ var ZoteroPane = new function () {
 		}
 		
 		for (let attachment of attachments) {
-			if (attachment.isPDFAttachment()) {
-				try {
-					await Zotero.PDFWorker.import(attachment.id, true);
-				}
-				catch (e) {
-					Zotero.logError(e);
-				}
+			try {
+				annotations.push(...await getAnnotationsForNote(attachment));
 			}
-			annotations.push(...attachment.getAnnotations().filter(x => x.annotationType != 'ink'));
+			catch (e) {
+				Zotero.logError(e);
+			}
 		}
 		var note = await Zotero.EditorInstance.createNoteFromAnnotations(
 			annotations,
@@ -6482,15 +6502,12 @@ var ZoteroPane = new function () {
 				continue;
 			}
 			for (let attachment of attachments) {
-				if (attachment.isPDFAttachment()) {
-					try {
-						await Zotero.PDFWorker.import(attachment.id, true);
-					}
-					catch (e) {
-						Zotero.logError(e);
-					}
+				try {
+					annotations.push(...await getAnnotationsForNote(attachment));
 				}
-				annotations.push(...attachment.getAnnotations().filter(x => x.annotationType != 'ink'));
+				catch (e) {
+					Zotero.logError(e);
+				}
 			}
 		}
 		
