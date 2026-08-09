@@ -1,5 +1,7 @@
 import {
 	writeAnnotations,
+	readAnnotations,
+	applyAnnotationChanges,
 	importAnnotations,
 	deletePages,
 	rotatePages,
@@ -104,6 +106,8 @@ async function getStructuredDocumentText(buf, options = {}) {
 
 const pdf = {
 	writeAnnotations,
+	readAnnotations,
+	applyAnnotationChanges,
 	importAnnotations,
 	deletePages,
 	rotatePages,
@@ -181,6 +185,39 @@ if (typeof self !== 'undefined') {
 			}
 			catch (e) {
 				console.log(e);
+				self.postMessage({
+					responseID: message.id,
+					error: errObject(e)
+				}, []);
+			}
+		}
+		else if (message.action === 'pdf.readAnnotations') {
+			try {
+				let annotations = await readAnnotations(
+					message.data.buf,
+					message.data.password,
+					fetchData
+				);
+				self.postMessage({ responseID: message.id, data: { annotations } }, []);
+			}
+			catch (e) {
+				self.postMessage({
+					responseID: message.id,
+					error: errObject(e)
+				}, []);
+			}
+		}
+		else if (message.action === 'pdf.applyAnnotationChanges') {
+			try {
+				let buf = await applyAnnotationChanges(
+					message.data.buf,
+					message.data.changes,
+					message.data.password,
+					fetchData
+				);
+				self.postMessage({ responseID: message.id, data: { buf } }, [buf]);
+			}
+			catch (e) {
 				self.postMessage({
 					responseID: message.id,
 					error: errObject(e)

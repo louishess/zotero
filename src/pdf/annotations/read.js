@@ -7,8 +7,43 @@ import * as putils from '../putils.js';
 
 const NOTE_SIZE = 22;
 
-export function readRawAnnotations(structure) {
+function getAnnotationFingerprint(annotation) {
+	return JSON.stringify({
+		type: annotation.type,
+		position: annotation.position,
+		comment: annotation.comment || '',
+		dateModified: annotation.dateModified || '',
+		authorName: annotation.authorName || '',
+		color: annotation.color || '',
+	});
+}
+
+function getAnnotationSource(rawAnnot, annotation, pageIndex, occurrence) {
+	let id = getAnnotationID(rawAnnot);
+	if (id) {
+		return { type: 'zotero', id };
+	}
+
+	let name = getString(rawAnnot['/NM']);
+	if (name) {
+		return { type: 'nm', name, pageIndex, occurrence };
+	}
+
+	if (rawAnnot.num) {
+		return { type: 'ref', num: rawAnnot.num, gen: rawAnnot.gen || 0 };
+	}
+
+	return {
+		type: 'fingerprint',
+		fingerprint: getAnnotationFingerprint(annotation),
+		pageIndex,
+		occurrence,
+	};
+}
+
+export function readRawAnnotations(structure, { includeSource = false } = {}) {
 	let annotations = [];
+	let occurrences = new Map();
 	let rawPages = structure['/Root']['/Pages']['/Kids'];
 	for (let pageIndex = 0; pageIndex < rawPages.length; pageIndex++) {
 		let rawAnnots = rawPages[pageIndex] && rawPages[pageIndex]['/Annots'];
@@ -19,6 +54,21 @@ export function readRawAnnotations(structure) {
 			let view = getRawPageView(rawPages[pageIndex]);
 			let annotation = readRawAnnotation(rawAnnot, pageIndex, view);
 			if (annotation) {
+				if (includeSource) {
+					let fingerprint = getAnnotationFingerprint(annotation);
+					let name = getString(rawAnnot['/NM']);
+					let occurrenceKey = name
+						? `${pageIndex}:nm:${name}`
+						: `${pageIndex}:fingerprint:${fingerprint}`;
+					let occurrence = occurrences.get(occurrenceKey) || 0;
+					occurrences.set(occurrenceKey, occurrence + 1);
+					annotation.source = getAnnotationSource(
+						rawAnnot,
+						annotation,
+						pageIndex,
+						occurrence
+					);
+				}
 				annotations.push(annotation);
 			}
 		}
@@ -26,6 +76,29 @@ export function readRawAnnotations(structure) {
 
 	return annotations;
 }
+
+export function annotationMatchesSource(rawAnnot, annotation, source, pageIndex, occurrence) {
+	if (!source) return false;
+	if (source.type === 'zotero') {
+		return getAnnotationID(rawAnnot) === source.id;
+	}
+	if (source.type === 'nm') {
+		return pageIndex === source.pageIndex
+			&& getString(rawAnnot['/NM']) === source.name
+			&& occurrence === source.occurrence;
+	}
+	if (source.type === 'ref') {
+		return rawAnnot.num === source.num && (rawAnnot.gen || 0) === source.gen;
+	}
+	if (source.type === 'fingerprint') {
+		return pageIndex === source.pageIndex
+			&& getAnnotationFingerprint(annotation) === source.fingerprint
+			&& occurrence === source.occurrence;
+	}
+	return false;
+}
+
+export { getAnnotationFingerprint };
 
 export function hasAnyAnnotations(structure) {
 	let rawPages = structure['/Root']['/Pages']['/Kids'];

@@ -256,6 +256,149 @@ describe('PDF Worker', function () {
 		// fs.writeFileSync(__dirname + '/1-out.pdf', buffer);
 	});
 
+	it('should adopt, update, and delete an embedded annotation by source identity', async function () {
+		let buf = fs.readFileSync(path.join(pdfFixturesDir, 'full', '1.pdf'));
+		let annotations = await pdfWorker.readAnnotations(buf);
+		let external = annotations.find(annotation => !annotation.id);
+		assert.ok(external?.source);
+
+		let adopted = {
+			...external,
+			id: 'ADOPT001',
+			comment: 'Adopted in place',
+			dateModified: '2026-01-02T03:04:05.000Z',
+		};
+		delete adopted.source;
+		delete adopted.transferable;
+		buf = await pdfWorker.applyAnnotationChanges(buf, {
+			upserts: [{ annotation: adopted, source: external.source }],
+		});
+
+		annotations = await pdfWorker.readAnnotations(buf);
+		let stored = annotations.find(annotation => annotation.id === adopted.id);
+		assert.ok(stored);
+		assert.equal(stored.comment, 'Adopted in place');
+
+		let updated = { ...stored, comment: 'Updated without duplication' };
+		delete updated.source;
+		delete updated.transferable;
+		buf = await pdfWorker.applyAnnotationChanges(buf, {
+			upserts: [{ annotation: updated, source: stored.source }],
+		});
+		annotations = await pdfWorker.readAnnotations(buf);
+		assert.equal(annotations.filter(annotation => annotation.id === adopted.id).length, 1);
+		assert.equal(
+			annotations.find(annotation => annotation.id === adopted.id).comment,
+			'Updated without duplication'
+		);
+
+		stored = annotations.find(annotation => annotation.id === adopted.id);
+		buf = await pdfWorker.applyAnnotationChanges(buf, { deletions: [stored.source] });
+		annotations = await pdfWorker.readAnnotations(buf);
+		assert.equal(annotations.filter(annotation => annotation.id === adopted.id).length, 0);
+	});
+
+	it('should idempotently upsert a Zotero-keyed annotation during migration', async function () {
+		let buf = fs.readFileSync(path.join(pdfFixturesDir, 'full', '1.pdf'));
+		let annotation = {
+			id: 'MIGRATE1',
+			type: 'highlight',
+			color: '#f8c348',
+			position: { pageIndex: 0, rects: [[100, 100, 180, 112]] },
+			authorName: '',
+			comment: 'Migrated',
+			dateModified: '2026-01-02T03:04:05.000Z',
+			tags: [],
+		};
+
+		buf = await pdfWorker.applyAnnotationChanges(buf, { upserts: [{ annotation }] });
+		buf = await pdfWorker.applyAnnotationChanges(buf, { upserts: [{ annotation }] });
+		let annotations = await pdfWorker.readAnnotations(buf);
+		assert.equal(annotations.filter(x => x.id === annotation.id).length, 1);
+	});
+
+	it('should round-trip updates and deletions for every supported annotation type', async function () {
+		let buf = fs.readFileSync(path.join(pdfFixturesDir, 'full', '1.pdf'));
+		let base = {
+			color: '#f8c348',
+			authorName: 'Test Author',
+			comment: '',
+			dateModified: '2026-01-02T03:04:05.000Z',
+			tags: ['initial'],
+		};
+		let annotations = [
+			{ ...base, id: 'TYPE0001', type: 'highlight', position: { pageIndex: 0, rects: [[80, 700, 160, 712]] } },
+			{ ...base, id: 'TYPE0002', type: 'underline', position: { pageIndex: 0, rects: [[80, 680, 160, 692]] } },
+			{ ...base, id: 'TYPE0003', type: 'note', comment: 'Note', position: { pageIndex: 0, rects: [[80, 640, 102, 662]] } },
+			{
+				...base,
+				id: 'TYPE0004',
+				type: 'text',
+				comment: 'Free text',
+				position: { pageIndex: 0, rects: [[80, 590, 200, 630]], fontSize: 12, rotation: 0 }
+			},
+			{ ...base, id: 'TYPE0005', type: 'image', position: { pageIndex: 0, rects: [[220, 590, 300, 650]] } },
+			{
+				...base,
+				id: 'TYPE0006',
+				type: 'ink',
+				position: { pageIndex: 0, paths: [[320, 600, 340, 620, 360, 600]], width: 2 }
+			},
+		];
+		let dataProvider = filename => fs.readFileSync(
+			path.join(__dirname, '../../pdf.js/external', filename)
+		);
+
+		buf = await pdfWorker.applyAnnotationChanges(
+			buf,
+			{ upserts: annotations.map(annotation => ({ annotation })) },
+			undefined,
+			dataProvider
+		);
+		let stored = await pdfWorker.readAnnotations(buf);
+		assert.deepEqual(
+			stored.filter(x => x.id?.startsWith('TYPE')).map(x => x.type).sort(),
+			['highlight', 'image', 'ink', 'note', 'text', 'underline']
+		);
+
+		let updates = stored
+			.filter(annotation => annotation.id?.startsWith('TYPE'))
+			.map(annotation => {
+				let source = annotation.source;
+				annotation = {
+					...annotation,
+					color: '#589fee',
+					comment: annotation.type === 'text' ? 'Updated free text' : 'Updated',
+					tags: ['updated'],
+				};
+				delete annotation.source;
+				delete annotation.transferable;
+				return { annotation, source };
+			});
+		buf = await pdfWorker.applyAnnotationChanges(buf, { upserts: updates }, undefined, dataProvider);
+		stored = await pdfWorker.readAnnotations(buf);
+		let updated = stored.filter(annotation => annotation.id?.startsWith('TYPE'));
+		assert.equal(updated.length, 6);
+		assert.ok(updated.every(annotation => annotation.color === '#589fee'));
+		assert.ok(updated.every(annotation => annotation.tags[0] === 'updated'));
+
+		buf = await pdfWorker.applyAnnotationChanges(buf, {
+			deletions: updated.map(annotation => annotation.source),
+		}, undefined, dataProvider);
+		stored = await pdfWorker.readAnnotations(buf);
+		assert.equal(stored.filter(annotation => annotation.id?.startsWith('TYPE')).length, 0);
+	});
+
+	it('should reject a stale annotation source without returning a modified PDF', async function () {
+		let buf = fs.readFileSync(path.join(pdfFixturesDir, 'full', '1.pdf'));
+		await assert.rejects(
+			pdfWorker.applyAnnotationChanges(buf, {
+				deletions: [{ type: 'zotero', id: 'MISSING1' }],
+			}),
+			/Annotation source matched 0 objects/
+		);
+	});
+
 	it('should preserve annotation text outside the BMP', async function () {
 		let buf = fs.readFileSync(path.join(pdfFixturesDir, 'full', '1.pdf'));
 		let comment = 'Emoji comment \u{1f600}';

@@ -1,8 +1,14 @@
 import './pdfjs-polyfills.js';
 import { PDFAssembler } from './pdfassembler.js';
-import { readRawAnnotations } from './annotations/read.js';
+import {
+	annotationMatchesSource,
+	getAnnotationFingerprint,
+	readRawAnnotation,
+	readRawAnnotations,
+} from './annotations/read.js';
 import { writeRawAnnotations } from './annotations/write.js';
-import { deleteAnnotations } from './annotations/delete.js';
+import { deleteAnnotations, deleteMatchingAnnotations } from './annotations/delete.js';
+import { getAnnotationID, getRawPageView, getString } from './annotations/common.js';
 import { getRangeByHighlight, getClosestOffset } from './text.js';
 import { Util } from '../../pdf.js/src/shared/util.js';
 import { resizeAndFitRect, hasAnyAnnotations } from './annotations/read.js';
@@ -75,6 +81,71 @@ async function writeAnnotations(buf, annotations, password, dataProvider) {
 	let standardFontProvider = (filename) => dataProvider('standard_fonts/' + filename);
 	let fontEmbedder = new FontEmbedder({ standardFontProvider });
 	await writeRawAnnotations(structure, annotations, fontEmbedder);
+	return await pdf.assemblePdf('ArrayBuffer');
+}
+
+function getRawAnnotationMatches(structure, sources) {
+	let matches = new Map(sources.map(source => [JSON.stringify(source), []]));
+	let occurrences = new Map();
+	let rawPages = structure['/Root']['/Pages']['/Kids'];
+	for (let pageIndex = 0; pageIndex < rawPages.length; pageIndex++) {
+		let rawPage = rawPages[pageIndex];
+		let rawAnnots = rawPage?.['/Annots'] || [];
+		let view = getRawPageView(rawPage);
+		for (let rawAnnot of rawAnnots) {
+			let annotation = readRawAnnotation(rawAnnot, pageIndex, view);
+			if (!annotation) continue;
+			let name = getString(rawAnnot['/NM']);
+			let occurrenceKey = name
+				? `${pageIndex}:nm:${name}`
+				: `${pageIndex}:fingerprint:${getAnnotationFingerprint(annotation)}`;
+			let occurrence = occurrences.get(occurrenceKey) || 0;
+			occurrences.set(occurrenceKey, occurrence + 1);
+			for (let source of sources) {
+				if (annotationMatchesSource(rawAnnot, annotation, source, pageIndex, occurrence)) {
+					matches.get(JSON.stringify(source)).push(rawAnnot);
+				}
+			}
+		}
+	}
+	return matches;
+}
+
+async function applyAnnotationChanges(buf, changes, password, dataProvider) {
+	let pdf = new PDFAssembler();
+	await pdf.init(buf, password);
+	let structure = await pdf.getPDFStructure();
+	let upserts = changes?.upserts || [];
+	let deletions = changes?.deletions || [];
+	let sources = [
+		...upserts.map(x => x.source).filter(Boolean),
+		...deletions,
+	];
+	let sourceMatches = getRawAnnotationMatches(structure, sources);
+
+	for (let source of sources) {
+		let matches = sourceMatches.get(JSON.stringify(source));
+		if (matches.length !== 1) {
+			throw new Error(`Annotation source matched ${matches.length} objects`);
+		}
+	}
+
+	let matchedRawAnnotations = new Set(
+		[...sourceMatches.values()].flat()
+	);
+	let replacementIDs = new Set(upserts.filter(x => !x.source).map(x => x.annotation.id));
+	deleteMatchingAnnotations(structure, rawAnnot =>
+		matchedRawAnnotations.has(rawAnnot)
+		|| replacementIDs.has(getAnnotationID(rawAnnot))
+	);
+
+	let annotations = upserts.map(x => x.annotation);
+	if (annotations.length) {
+		let standardFontProvider = filename => dataProvider('standard_fonts/' + filename);
+		let fontEmbedder = new FontEmbedder({ standardFontProvider });
+		await writeRawAnnotations(structure, annotations, fontEmbedder);
+	}
+
 	return await pdf.assemblePdf('ArrayBuffer');
 }
 
@@ -199,19 +270,28 @@ function splitAnnotations(annotations) {
 	return splitAnnotations;
 }
 
-async function importAnnotations(buf, existingAnnotations, password, transfer, dataProvider) {
+async function importAnnotations(
+	buf,
+	existingAnnotations,
+	password,
+	transfer,
+	dataProvider,
+	{ includeSource = false, deduplicateAnnotations = true } = {}
+) {
 	let pdf = new PDFAssembler();
 	await pdf.init(buf, password);
 	let pdfDocument = pdf.pdfManager.pdfDocument;
 	let structure = await pdf.getPDFStructure();
-	let annotations = await readRawAnnotations(structure, pdfDocument);
+	let annotations = await readRawAnnotations(structure, { includeSource });
 	let modified = false;
 
 	if (transfer) {
 		modified = deleteAnnotations(structure);
 	}
 
-	annotations = deduplicate(annotations);
+	if (deduplicateAnnotations) {
+		annotations = deduplicate(annotations);
+	}
 
 	let imported = transfer ? annotations : getImported(annotations, existingAnnotations);
 	let deleted = transfer ? existingAnnotations.map(x => x.id) : getDeleted(annotations, existingAnnotations);
@@ -281,6 +361,18 @@ async function importAnnotations(buf, existingAnnotations, password, transfer, d
 	}
 
 	return { imported, deleted };
+}
+
+async function readAnnotations(buf, password, dataProvider) {
+	let { imported } = await importAnnotations(
+		buf,
+		[],
+		password,
+		false,
+		dataProvider,
+		{ includeSource: true, deduplicateAnnotations: false }
+	);
+	return imported;
 }
 
 function replaceReferences(node, refs, ref, visitedNodes = new Set()) {
@@ -950,6 +1042,8 @@ async function importMendeleyAnnotations(buf, mendeleyAnnotations, password, dat
 
 export {
 	writeAnnotations,
+	readAnnotations,
+	applyAnnotationChanges,
 	importAnnotations,
 	deletePages,
 	rotatePages,
