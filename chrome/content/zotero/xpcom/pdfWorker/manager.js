@@ -196,6 +196,275 @@ class PDFWorker {
 			}
 		}
 	}
+
+	async canUseFileAnnotations(item) {
+		if (!Zotero.Prefs.get('reader.annotations.saveToFile')
+			|| !item?.isPDFAttachment()
+			|| item.library.libraryType !== 'user'
+			|| !item.library.editable
+			|| !item.library.filesEditable
+			|| !item.isEditable()
+			|| item.deleted
+			|| item.parentItem?.deleted) {
+			return false;
+		}
+
+		let path = await item.getFilePathAsync();
+		if (!path) return false;
+		try {
+			let file = Zotero.File.pathToFile(path);
+			return file.isWritable() && file.parent.isWritable();
+		}
+		catch (e) {
+			Zotero.logError(e);
+			return false;
+		}
+	}
+
+	async _getFileToken(path) {
+		let { size, lastModified } = await IOUtils.stat(path);
+		return { size, lastModified };
+	}
+
+	_fileTokensEqual(a, b) {
+		return !!a && !!b && a.size === b.size && a.lastModified === b.lastModified;
+	}
+
+	/**
+	 * Read supported annotations directly from a PDF without creating Zotero items.
+	 */
+	async readAnnotations(itemID, isPriority, password) {
+		return this._enqueue(async () => {
+			let attachment = await Zotero.Items.getAsync(itemID);
+			if (!attachment.isPDFAttachment()) {
+				throw new Error('Item must be a PDF attachment');
+			}
+			let path = await attachment.getFilePathAsync();
+			if (!path) {
+				throw new Error('PDF attachment file not found');
+			}
+			let fileToken = await this._getFileToken(path);
+			if (fileToken.size > Math.pow(2, 31) - 1) {
+				throw new Error(`The file "${path}" is too large`);
+			}
+			let buf = await IOUtils.read(path);
+			buf = new Uint8Array(buf).buffer;
+			let readToken = await this._getFileToken(path);
+			if (!this._fileTokensEqual(fileToken, readToken)) {
+				let error = new Error('PDF file changed while annotations were being loaded');
+				error.name = 'FileChangedException';
+				throw error;
+			}
+			try {
+				var { annotations } = await this._query('pdf.readAnnotations', {
+					buf, password
+				}, [buf]);
+			}
+			catch (e) {
+				this._throwWorkerError('pdf.readAnnotations', e);
+			}
+
+			for (let annotation of annotations) {
+				annotation.tags = (annotation.tags || []).map(name => ({ name }));
+			}
+			return { annotations, fileToken };
+		}, isPriority);
+	}
+
+	/**
+	 * Atomically apply annotation changes to the original PDF.
+	 */
+	async applyAnnotationChanges(itemID, changes, expectedFileToken, isPriority, password) {
+		return this._enqueue(async () => {
+			let attachment = await Zotero.Items.getAsync(itemID);
+			if (!attachment.isPDFAttachment()) {
+				throw new Error('Item must be a PDF attachment');
+			}
+			if (!(await this.canUseFileAnnotations(attachment))) {
+				throw new Error('PDF is not eligible for file-backed annotations');
+			}
+			let path = await attachment.getFilePathAsync();
+			if (!path) {
+				throw new Error('PDF attachment file not found');
+			}
+			let initialToken = await this._getFileToken(path);
+			if (expectedFileToken && !this._fileTokensEqual(initialToken, expectedFileToken)) {
+				let error = new Error('PDF file changed since annotations were loaded');
+				error.name = 'FileChangedException';
+				throw error;
+			}
+			if (initialToken.size > Math.pow(2, 31) - 1) {
+				throw new Error(`The file "${path}" is too large`);
+			}
+
+			let workerChanges = {
+				upserts: (changes.upserts || []).map(({ annotation, source }) => ({
+					annotation: {
+						...annotation,
+						tags: (annotation.tags || []).map(tag => tag.name || tag)
+					},
+					source
+				})),
+				deletions: changes.deletions || []
+			};
+			for (let { annotation } of workerChanges.upserts) {
+				delete annotation.image;
+				delete annotation.readOnly;
+				delete annotation.isExternal;
+				delete annotation.onlyTextOrComment;
+				delete annotation.source;
+				delete annotation.transferable;
+			}
+
+			let buf = await IOUtils.read(path);
+			buf = new Uint8Array(buf).buffer;
+			try {
+				var { buf: modifiedBuf } = await this._query('pdf.applyAnnotationChanges', {
+					buf, changes: workerChanges, password
+				}, [buf]);
+			}
+			catch (e) {
+				this._throwWorkerError('pdf.applyAnnotationChanges', e, { changes: workerChanges });
+			}
+
+			let currentToken = await this._getFileToken(path);
+			if (!this._fileTokensEqual(initialToken, currentToken)) {
+				let error = new Error('PDF file changed while annotations were being saved');
+				error.name = 'FileChangedException';
+				throw error;
+			}
+
+			await IOUtils.write(path, new Uint8Array(modifiedBuf), {
+				tmpPath: path + '.zotero-annotations.tmp'
+			});
+			let fileToken = await this._getFileToken(path);
+			attachment.attachmentLastProcessedModificationTime = Math.floor(fileToken.lastModified / 1000);
+			await attachment.saveTx({ skipAll: true });
+			return {
+				fileToken,
+				sources: Object.fromEntries(
+					workerChanges.upserts.map(({ annotation }) => [
+						annotation.id,
+						{ type: 'zotero', id: annotation.id }
+					])
+				)
+			};
+		}, isPriority);
+	}
+
+	async migrateAnnotationsToFile(itemID, isPriority, password) {
+		let attachment = await Zotero.Items.getAsync(itemID);
+		let annotationItems = attachment.getAnnotations();
+		let internalItems = annotationItems.filter(item => !item.annotationIsExternal);
+		let externalItems = annotationItems.filter(item => item.annotationIsExternal);
+		let { fileToken } = await this.readAnnotations(itemID, isPriority, password);
+		if (internalItems.length) {
+			let upserts = [];
+			for (let item of internalItems) {
+				let annotation = await Zotero.Annotations.toJSON(item);
+				annotation.id = item.key;
+				delete annotation.key;
+				upserts.push({ annotation });
+			}
+			({ fileToken } = await this.applyAnnotationChanges(
+				itemID,
+				{ upserts },
+				fileToken,
+				isPriority,
+				password
+			));
+		}
+
+		let { annotations } = await this.readAnnotations(itemID, isPriority, password);
+		let embeddedIDs = new Set(annotations.map(annotation => annotation.id).filter(Boolean));
+		let missingIDs = internalItems.map(item => item.key).filter(key => !embeddedIDs.has(key));
+		if (missingIDs.length) {
+			throw new Error(`Failed to verify migrated PDF annotations: ${missingIDs.join(', ')}`);
+		}
+
+		// External annotation items are a cache of annotations read from the PDF.
+		// Verify each cached source still exists before removing those rows.
+		let getExternalKey = annotation => {
+			let position = annotation.position || JSON.parse(annotation.annotationPosition);
+			let type = annotation.type || annotation.annotationType;
+			let key = type + position.pageIndex;
+			if (type === 'ink') {
+				key += position.width + JSON.stringify(position.paths);
+			}
+			else {
+				key += JSON.stringify(position.rects);
+			}
+			return key + (annotation.comment || annotation.annotationComment || '');
+		};
+		let embeddedExternalCounts = new Map();
+		let migratedInternalIDs = new Set(internalItems.map(item => item.key));
+		for (let annotation of annotations.filter(annotation => !migratedInternalIDs.has(annotation.id))) {
+			let key = getExternalKey(annotation);
+			embeddedExternalCounts.set(key, (embeddedExternalCounts.get(key) || 0) + 1);
+		}
+		let missingExternalKeys = [];
+		for (let item of externalItems) {
+			let key = getExternalKey(item);
+			let count = embeddedExternalCounts.get(key) || 0;
+			if (!count) {
+				missingExternalKeys.push(item.key);
+			}
+			else {
+				embeddedExternalCounts.set(key, count - 1);
+			}
+		}
+		if (missingExternalKeys.length) {
+			throw new Error(
+				`Failed to verify cached PDF annotations: ${missingExternalKeys.join(', ')}`
+			);
+		}
+		if (annotationItems.length) {
+			await Zotero.Items.erase(annotationItems.map(item => item.id));
+		}
+		return this.readAnnotations(itemID, isPriority, password);
+	}
+
+	async renderAnnotationImage(itemID, annotation, isPriority, password) {
+		return this._enqueue(async () => {
+			let attachment = await Zotero.Items.getAsync(itemID);
+			let path = await attachment.getFilePathAsync();
+			if (!path) return null;
+			let buf = await IOUtils.read(path);
+			buf = new Uint8Array(buf).buffer;
+			let rect = annotation.position?.rects?.[0];
+			if (!rect && annotation.position?.paths) {
+				let xs = annotation.position.paths.flatMap(path => path.filter((_x, i) => i % 2 === 0));
+				let ys = annotation.position.paths.flatMap(path => path.filter((_y, i) => i % 2 === 1));
+				let padding = (annotation.position.width || 1) * 2;
+				rect = [
+					Math.min(...xs) - padding,
+					Math.min(...ys) - padding,
+					Math.max(...xs) + padding,
+					Math.max(...ys) + padding
+				];
+			}
+			if (!rect) return null;
+			try {
+				var { buf: imageBuf } = await this._query('pdf.renderArea', {
+					buf,
+					pageIndex: annotation.position.pageIndex,
+					rect,
+					scale: 2,
+					password
+				}, [buf]);
+			}
+			catch (e) {
+				this._throwWorkerError('pdf.renderArea', e);
+			}
+			if (!imageBuf) return null;
+			let bytes = new Uint8Array(imageBuf);
+			let binary = '';
+			for (let i = 0; i < bytes.length; i += 0x8000) {
+				binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+			}
+			return 'data:image/png;base64,' + btoa(binary);
+		}, isPriority);
+	}
 	
 	/**
 	 * Export attachment with annotations to specified path
