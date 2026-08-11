@@ -41,6 +41,8 @@ class PDFWorker {
 		this._waitingPromises = {};
 		this._queue = [];
 		this._processingQueue = false;
+		this._fileAnnotationStates = new Map();
+		this._lastFileAnnotationOperationID = 0;
 	}
 
 	async _processQueue() {
@@ -230,6 +232,61 @@ class PDFWorker {
 		return !!a && !!b && a.size === b.size && a.lastModified === b.lastModified;
 	}
 
+	_fileTokenKey(token) {
+		return token ? `${token.size}:${token.lastModified}` : '';
+	}
+
+	_registerFileAnnotationRead(itemID, fileToken) {
+		let state = this._fileAnnotationStates.get(itemID);
+		if (state && this._fileTokensEqual(state.fileToken, fileToken)) {
+			return state;
+		}
+		state = {
+			fileToken,
+			fileRevision: (state?.fileRevision || 0) + 1,
+			knownTokenKeys: new Set([this._fileTokenKey(fileToken)])
+		};
+		this._fileAnnotationStates.set(itemID, state);
+		return state;
+	}
+
+	_getExpectedFileAnnotationState(expectedFileState) {
+		if (!expectedFileState) return {};
+		if (expectedFileState.fileToken) {
+			return expectedFileState;
+		}
+		// Temporary compatibility for callers using the original token-only API.
+		return { fileToken: expectedFileState };
+	}
+
+	_assertFileAnnotationState(itemID, currentToken, expectedFileState) {
+		let expected = this._getExpectedFileAnnotationState(expectedFileState);
+		let state = this._fileAnnotationStates.get(itemID);
+		if (!state) {
+			if (expected.fileToken && !this._fileTokensEqual(currentToken, expected.fileToken)) {
+				throw this._newFileChangedError('PDF file changed since annotations were loaded');
+			}
+			return this._registerFileAnnotationRead(itemID, currentToken);
+		}
+
+		// The disk must still contain the last revision observed or written by this
+		// process. An older caller revision is safe to rebase only when its token is
+		// also part of the current Zotero-authored history.
+		if (!this._fileTokensEqual(currentToken, state.fileToken)
+			|| (expected.fileToken
+				&& !state.knownTokenKeys.has(this._fileTokenKey(expected.fileToken)))
+			|| (expected.fileRevision && expected.fileRevision > state.fileRevision)) {
+			throw this._newFileChangedError('PDF file changed since annotations were loaded');
+		}
+		return state;
+	}
+
+	_newFileChangedError(message) {
+		let error = new Error(message);
+		error.name = 'FileChangedException';
+		return error;
+	}
+
 	/**
 	 * Read supported annotations directly from a PDF without creating Zotero items.
 	 */
@@ -267,15 +324,17 @@ class PDFWorker {
 			for (let annotation of annotations) {
 				annotation.tags = (annotation.tags || []).map(name => ({ name }));
 			}
-			return { annotations, fileToken };
+			let state = this._registerFileAnnotationRead(itemID, fileToken);
+			return { annotations, fileToken, fileRevision: state.fileRevision };
 		}, isPriority);
 	}
 
 	/**
 	 * Atomically apply annotation changes to the original PDF.
 	 */
-	async applyAnnotationChanges(itemID, changes, expectedFileToken, isPriority, password) {
+	async applyAnnotationChanges(itemID, changes, expectedFileState, isPriority, password) {
 		return this._enqueue(async () => {
+			let operationID = ++this._lastFileAnnotationOperationID;
 			let attachment = await Zotero.Items.getAsync(itemID);
 			if (!attachment.isPDFAttachment()) {
 				throw new Error('Item must be a PDF attachment');
@@ -288,11 +347,11 @@ class PDFWorker {
 				throw new Error('PDF attachment file not found');
 			}
 			let initialToken = await this._getFileToken(path);
-			if (expectedFileToken && !this._fileTokensEqual(initialToken, expectedFileToken)) {
-				let error = new Error('PDF file changed since annotations were loaded');
-				error.name = 'FileChangedException';
-				throw error;
-			}
+			let state = this._assertFileAnnotationState(
+				itemID,
+				initialToken,
+				expectedFileState
+			);
 			if (initialToken.size > Math.pow(2, 31) - 1) {
 				throw new Error(`The file "${path}" is too large`);
 			}
@@ -315,6 +374,22 @@ class PDFWorker {
 				delete annotation.source;
 				delete annotation.transferable;
 			}
+			let changeSummary = {
+				upserts: workerChanges.upserts.map(({ annotation }) => ({
+					id: annotation.id,
+					type: annotation.type
+				})),
+				deletions: workerChanges.deletions.length
+			};
+			Zotero.debug(
+				`File-backed annotation operation ${operationID} for item ${itemID}: `
+				+ JSON.stringify({
+					...changeSummary,
+					expectedRevision: this._getExpectedFileAnnotationState(expectedFileState).fileRevision,
+					currentRevision: state.fileRevision,
+					initialToken
+				})
+			);
 
 			let buf = await IOUtils.read(path);
 			buf = new Uint8Array(buf).buffer;
@@ -324,24 +399,39 @@ class PDFWorker {
 				}, [buf]);
 			}
 			catch (e) {
-				this._throwWorkerError('pdf.applyAnnotationChanges', e, { changes: workerChanges });
+				this._throwWorkerError('pdf.applyAnnotationChanges', e, changeSummary);
 			}
 
 			let currentToken = await this._getFileToken(path);
 			if (!this._fileTokensEqual(initialToken, currentToken)) {
-				let error = new Error('PDF file changed while annotations were being saved');
-				error.name = 'FileChangedException';
-				throw error;
+				throw this._newFileChangedError('PDF file changed while annotations were being saved');
 			}
 
-			await IOUtils.write(path, new Uint8Array(modifiedBuf), {
-				tmpPath: path + '.zotero-annotations.tmp'
-			});
+			let tmpPath = `${path}.zotero-annotations-${operationID}-${Zotero.Utilities.randomString(8)}.tmp`;
+			try {
+				await IOUtils.write(path, new Uint8Array(modifiedBuf), { tmpPath });
+			}
+			finally {
+				if (await IOUtils.exists(tmpPath)) {
+					await IOUtils.remove(tmpPath);
+				}
+			}
 			let fileToken = await this._getFileToken(path);
+			state.fileToken = fileToken;
+			state.fileRevision++;
+			state.knownTokenKeys.add(this._fileTokenKey(fileToken));
+			while (state.knownTokenKeys.size > 32) {
+				state.knownTokenKeys.delete(state.knownTokenKeys.values().next().value);
+			}
 			attachment.attachmentLastProcessedModificationTime = Math.floor(fileToken.lastModified / 1000);
 			await attachment.saveTx({ skipAll: true });
+			Zotero.debug(
+				`Completed file-backed annotation operation ${operationID} for item ${itemID}: `
+				+ JSON.stringify({ fileRevision: state.fileRevision, fileToken })
+			);
 			return {
 				fileToken,
+				fileRevision: state.fileRevision,
 				sources: Object.fromEntries(
 					workerChanges.upserts.map(({ annotation }) => [
 						annotation.id,
@@ -357,7 +447,7 @@ class PDFWorker {
 		let annotationItems = attachment.getAnnotations();
 		let internalItems = annotationItems.filter(item => !item.annotationIsExternal);
 		let externalItems = annotationItems.filter(item => item.annotationIsExternal);
-		let { fileToken } = await this.readAnnotations(itemID, isPriority, password);
+		let { fileToken, fileRevision } = await this.readAnnotations(itemID, isPriority, password);
 		if (internalItems.length) {
 			let upserts = [];
 			for (let item of internalItems) {
@@ -366,10 +456,10 @@ class PDFWorker {
 				delete annotation.key;
 				upserts.push({ annotation });
 			}
-			({ fileToken } = await this.applyAnnotationChanges(
+			({ fileToken, fileRevision } = await this.applyAnnotationChanges(
 				itemID,
 				{ upserts },
-				fileToken,
+				{ fileToken, fileRevision },
 				isPriority,
 				password
 			));
