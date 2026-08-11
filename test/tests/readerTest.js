@@ -248,7 +248,9 @@ describe("Reader", function () {
 			assert.deepEqual(stored.tags, [{ name: 'embedded-tag' }]);
 			assert.lengthOf(attachment.getAnnotations(), 0);
 
-			assert.equal(reader._internalReader.deleteAnnotations([annotation.id]), 1);
+			assert.equal(reader._internalReader.deleteAnnotations(
+				Components.utils.cloneInto([annotation.id], reader._iframeWindow)
+			), 1);
 			await waitForCallback(() => !reader._fileAnnotations.has(annotation.id), 20, 10);
 			result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
 			assert.isFalse(result.annotations.some(x => x.id === annotation.id));
@@ -273,14 +275,15 @@ describe("Reader", function () {
 				tags: [],
 				dateModified: '2026-01-02T03:04:05.000Z'
 			});
-			let prompt = sinon.stub(Services.prompt, 'confirmEx').returns(0);
+			let prompt = Services.prompt;
+			Services.prompt = { confirmEx: () => 0 };
 			let reader;
 			try {
 				reader = await Zotero.Reader.open(attachment.id);
 				await reader._initPromise;
 			}
 			finally {
-				prompt.restore();
+				Services.prompt = prompt;
 			}
 
 			assert.isTrue(reader._fileAnnotationMode);
@@ -288,11 +291,244 @@ describe("Reader", function () {
 			let result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
 			assert.isOk(result.annotations.find(x => x.id === legacy.key));
 
-			assert.equal(reader._internalReader.deleteAnnotations([legacy.key]), 1);
+			assert.equal(reader._internalReader.deleteAnnotations(
+				Components.utils.cloneInto([legacy.key], reader._iframeWindow)
+			), 1);
 			await waitForCallback(() => !reader._fileAnnotations.has(legacy.key), 20, 10);
 			result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
 			assert.isFalse(result.annotations.some(x => x.id === legacy.key));
 			reader.close();
+		});
+
+		it('should persist every supported annotation type across rapid edits and reopen', async function () {
+			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			let attachment = await importFileAttachment('test.pdf');
+			let reader = await Zotero.Reader.open(attachment.id);
+			await reader._initPromise;
+			reader._internalReader._annotationManager._skipAnnotationSavingDebounce = true;
+
+			let inputs = [{
+				type: 'highlight',
+				position: { pageIndex: 0, rects: [[50, 700, 150, 712]] },
+				text: 'highlight'
+			}, {
+				type: 'underline',
+				position: { pageIndex: 0, rects: [[50, 680, 150, 692]] },
+				text: 'underline'
+			}, {
+				type: 'note',
+				position: { pageIndex: 0, rects: [[50, 640, 72, 662]] },
+				comment: 'note'
+			}, {
+				type: 'text',
+				position: {
+					pageIndex: 0,
+					rects: [[80, 590, 200, 630]],
+					fontSize: 12,
+					rotation: 0
+				},
+				comment: 'free text'
+			}, {
+				type: 'image',
+				position: { pageIndex: 0, rects: [[220, 590, 300, 650]] }
+			}, {
+				type: 'ink',
+				position: {
+					pageIndex: 0,
+					paths: [[320, 600, 340, 620, 360, 600]],
+					width: 2
+				}
+			}];
+			let annotations = inputs.map((input, index) => (
+				reader._internalReader._annotationManager.addAnnotation(
+					Components.utils.cloneInto({
+						...input,
+						color: '#ffd400',
+						sortIndex: `00000|00000${index}|00000`
+					}, reader._iframeWindow)
+				)
+			));
+			await waitForFileAnnotationMutations(reader);
+
+			assert.notOk(reader._internalReader._state.readOnly);
+			assert.lengthOf(attachment.getAnnotations(), 0);
+			let result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			assert.sameMembers(
+				result.annotations.filter(annotation => annotations.some(x => x.id === annotation.id))
+					.map(annotation => annotation.type),
+				['highlight', 'underline', 'note', 'text', 'image', 'ink']
+			);
+
+			let underline = annotations.find(annotation => annotation.type === 'underline');
+			let note = annotations.find(annotation => annotation.type === 'note');
+			reader._internalReader._annotationManager.updateAnnotations(
+				Components.utils.cloneInto([
+					{ id: underline.id, comment: 'underlined comment' },
+					{ id: note.id, comment: 'updated note' }
+				], reader._iframeWindow)
+			);
+			await waitForFileAnnotationMutations(reader);
+			let tagItem = reader._getFileAnnotationTagItem(underline.id);
+			tagItem.addTag('embedded-tag');
+			await tagItem.saveTx();
+			let annotationIDs = annotations.map(annotation => annotation.id);
+			let noteID = note.id;
+			let underlineID = underline.id;
+
+			reader.close();
+			await cleanupReaders(reader);
+			reader = await Zotero.Reader.open(attachment.id);
+			await reader._initPromise;
+			reader._internalReader._annotationManager._skipAnnotationSavingDebounce = true;
+			result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			assert.equal(result.annotations.find(x => x.id === noteID).comment, 'updated note');
+			assert.deepEqual(
+				result.annotations.find(x => x.id === underlineID).tags,
+				[{ name: 'embedded-tag' }]
+			);
+			assert.notOk(reader._internalReader._state.readOnly);
+
+			for (let id of annotationIDs) {
+				assert.equal(reader._internalReader.deleteAnnotations(
+					Components.utils.cloneInto([id], reader._iframeWindow)
+				), 1);
+				await waitForFileAnnotationMutations(reader);
+			}
+			result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			assert.isFalse(result.annotations.some(annotation => annotationIDs.includes(annotation.id)));
+			assert.lengthOf(attachment.getAnnotations(), 0);
+			reader.close();
+		});
+
+		it('should rebase queued Zotero writes but reject an external PDF change', async function () {
+			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			let attachment = await importFileAttachment('test.pdf');
+			let initial = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			let makeAnnotation = (id, y) => ({
+				id,
+				type: 'highlight',
+				color: '#ffd400',
+				comment: '',
+				authorName: '',
+				dateModified: new Date().toISOString(),
+				tags: [],
+				position: { pageIndex: 0, rects: [[50, y, 150, y + 12]] }
+			});
+			let expectedState = {
+				fileToken: initial.fileToken,
+				fileRevision: initial.fileRevision
+			};
+			await Promise.all([
+				Zotero.PDFWorker.applyAnnotationChanges(
+					attachment.id,
+					{ upserts: [{ annotation: makeAnnotation('REBASE01', 700) }] },
+					expectedState,
+					true
+				),
+				Zotero.PDFWorker.applyAnnotationChanges(
+					attachment.id,
+					{ upserts: [{ annotation: makeAnnotation('REBASE02', 680) }] },
+					expectedState,
+					true
+				)
+			]);
+			let result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			assert.isOk(result.annotations.find(annotation => annotation.id === 'REBASE01'));
+			assert.isOk(result.annotations.find(annotation => annotation.id === 'REBASE02'));
+			let reader = await Zotero.Reader.open(attachment.id);
+			await reader._initPromise;
+			reader._internalReader._annotationManager._skipAnnotationSavingDebounce = true;
+
+			let path = await attachment.getFilePathAsync();
+			let bytes = await IOUtils.read(path);
+			let externalMarker = new TextEncoder().encode('\n% external change\n');
+			let changed = new Uint8Array(bytes.length + externalMarker.length);
+			changed.set(bytes);
+			changed.set(externalMarker, bytes.length);
+			await IOUtils.write(path, changed);
+			let rejected = reader._internalReader._annotationManager.addAnnotation(
+				Components.utils.cloneInto({
+					type: 'highlight',
+					color: '#ffd400',
+					sortIndex: '00000|000003|00000',
+					position: { pageIndex: 0, rects: [[50, 660, 150, 672]] }
+				}, reader._iframeWindow)
+			);
+			await waitForCallback(
+				() => !reader._internalReader._annotationManager._savingInProgress,
+				200,
+				10
+			);
+			let error = await getPromiseError(reader._fileAnnotationMutationPromise);
+			assert.equal(error.name, 'FileChangedException');
+			assert.isTrue(reader._internalReader._state.readOnly);
+
+			await reader.reload();
+			assert.notOk(reader._internalReader._state.readOnly);
+			assert.isFalse(reader._fileAnnotations.has(rejected.id));
+			reader.close();
+		});
+
+		it('should synchronize file-backed changes between two open readers', async function () {
+			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			let attachment = await importFileAttachment('test.pdf');
+			let reader1;
+			let reader2;
+			try {
+				reader1 = await Zotero.Reader.open(attachment.id);
+				reader2 = await Zotero.Reader.open(
+					attachment.id,
+					null,
+					{ allowDuplicate: true, openInBackground: true }
+				);
+				await Promise.all([reader1._initPromise, reader2._initPromise]);
+				reader1._internalReader._annotationManager._skipAnnotationSavingDebounce = true;
+				reader2._internalReader._annotationManager._skipAnnotationSavingDebounce = true;
+
+				let annotation = reader1._internalReader._annotationManager.addAnnotation(
+					Components.utils.cloneInto({
+						type: 'note',
+						color: '#ffd400',
+						comment: 'first reader',
+						sortIndex: '00000|000001|00000',
+						position: { pageIndex: 0, rects: [[50, 640, 72, 662]] }
+					}, reader1._iframeWindow)
+				);
+				let annotationID = annotation.id;
+				await waitForFileAnnotationMutations(reader1);
+				await waitForCallback(
+					() => reader2._fileAnnotations.get(annotationID)?.comment === 'first reader',
+					100,
+					10
+				);
+
+				reader2._internalReader._annotationManager.updateAnnotations(
+					Components.utils.cloneInto([{
+						id: annotationID,
+						comment: 'second reader'
+					}], reader2._iframeWindow)
+				);
+				await waitForFileAnnotationMutations(reader2);
+				await waitForCallback(
+					() => reader1._fileAnnotations.get(annotationID)?.comment === 'second reader',
+					100,
+					10
+				);
+
+				assert.equal(reader1._internalReader.deleteAnnotations(
+					Components.utils.cloneInto([annotationID], reader1._iframeWindow)
+				), 1);
+				await waitForFileAnnotationMutations(reader1);
+				await waitForCallback(
+					() => !reader2._fileAnnotations.has(annotationID),
+					100,
+					10
+				);
+				assert.lengthOf(attachment.getAnnotations(), 0);
+			}
+			finally {
+				await cleanupReaders(reader1, reader2);
+			}
 		});
 
 		async function cleanupReaders(...readers) {
@@ -307,6 +543,17 @@ describe("Reader", function () {
 					Zotero.Reader._readers.splice(index, 1);
 				}
 			}
+		}
+
+		async function waitForFileAnnotationMutations(reader) {
+			let manager = reader._internalReader._annotationManager;
+			await waitForCallback(
+				() => !manager._savingInProgress && !manager._unsavedAnnotations.size,
+				200,
+				10
+			);
+			await reader._fileAnnotationMutationPromise;
+			await Zotero.Reader.waitForFileAnnotationMutations(reader.itemID);
 		}
 
 		it('should reopen a reader whose tab closes during a notifier transaction', async function () {
