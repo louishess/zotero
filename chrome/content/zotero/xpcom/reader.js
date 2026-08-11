@@ -71,6 +71,8 @@ class ReaderInstance {
 		this._fileAnnotationSources = new Map();
 		this._fileAnnotations = new Map();
 		this._fileAnnotationFileToken = null;
+		this._fileAnnotationFileRevision = null;
+		this._fileAnnotationMutationPromise = Promise.resolve();
 		this._fileAnnotationReadOnly = false;
 
 		this._type = this._item.attachmentReaderType;
@@ -212,13 +214,18 @@ class ReaderInstance {
 			? await Zotero.PDFWorker.migrateAnnotationsToFile(this.itemID, true)
 			: await Zotero.PDFWorker.readAnnotations(this.itemID, true);
 		this._fileAnnotationFileToken = result.fileToken;
+		this._fileAnnotationFileRevision = result.fileRevision;
 		return this._prepareFileAnnotations(result.annotations);
 	}
 
 	async _refreshFileAnnotations() {
 		let oldIDs = [...this._fileAnnotations.keys()];
-		let { annotations, fileToken } = await Zotero.PDFWorker.readAnnotations(this.itemID, true);
+		let { annotations, fileToken, fileRevision } = await Zotero.PDFWorker.readAnnotations(
+			this.itemID,
+			true
+		);
 		this._fileAnnotationFileToken = fileToken;
+		this._fileAnnotationFileRevision = fileRevision;
 		let prepared = this._prepareFileAnnotations(annotations);
 		let newIDs = new Set(prepared.map(annotation => annotation.id));
 		let deletions = oldIDs.filter(id => !newIDs.has(id));
@@ -232,71 +239,91 @@ class ReaderInstance {
 			upserts: prepared,
 			deletions,
 			fileToken,
+			fileRevision,
 			sources: Object.fromEntries(this._fileAnnotationSources)
 		});
 	}
 
+	_enqueueFileAnnotationMutation(fn) {
+		let promise = Zotero.Reader.queueFileAnnotationMutation(this.itemID, fn);
+		this._fileAnnotationMutationPromise = promise;
+		return promise;
+	}
+
 	async _saveFileAnnotations(annotations) {
-		let imageOnly = annotations.every(annotation =>
-			Object.keys(annotation).length === 2 && annotation.id && annotation.image
+		let imageOnly = annotations.every(
+			annotation => Object.keys(annotation).length === 2 && annotation.id && annotation.image
 		);
 		if (imageOnly) {
 			for (let annotation of annotations) {
 				let existing = this._fileAnnotations.get(annotation.id);
 				if (existing) existing.image = annotation.image;
 			}
-			return;
+			return undefined;
 		}
 
-		let upserts = annotations.map(annotation => ({
-			annotation: JSON.parse(JSON.stringify(annotation)),
-			source: this._fileAnnotationSources.get(annotation.id)
-		}));
-		let result = await Zotero.PDFWorker.applyAnnotationChanges(
-			this.itemID,
-			{ upserts },
-			this._fileAnnotationFileToken,
-			true
-		);
-		this._fileAnnotationFileToken = result.fileToken;
-		for (let annotation of annotations) {
-			let plainAnnotation = JSON.parse(JSON.stringify(annotation));
-			this._fileAnnotations.set(annotation.id, plainAnnotation);
-			this._fileAnnotationSources.set(annotation.id, result.sources[annotation.id]);
-		}
-		Zotero.Reader.broadcastFileAnnotationChanges(this, {
-			upserts: annotations,
-			deletions: [],
-			...result
+		return this._enqueueFileAnnotationMutation(async () => {
+			let upserts = annotations.map(annotation => ({
+				annotation: JSON.parse(JSON.stringify(annotation)),
+				source: this._fileAnnotationSources.get(annotation.id)
+			}));
+			let result = await Zotero.PDFWorker.applyAnnotationChanges(
+				this.itemID,
+				{ upserts },
+				{
+					fileToken: this._fileAnnotationFileToken,
+					fileRevision: this._fileAnnotationFileRevision
+				},
+				true
+			);
+			this._fileAnnotationFileToken = result.fileToken;
+			this._fileAnnotationFileRevision = result.fileRevision;
+			for (let annotation of annotations) {
+				let plainAnnotation = JSON.parse(JSON.stringify(annotation));
+				this._fileAnnotations.set(annotation.id, plainAnnotation);
+				this._fileAnnotationSources.set(annotation.id, result.sources[annotation.id]);
+			}
+			Zotero.Reader.broadcastFileAnnotationChanges(this, {
+				upserts: annotations,
+				deletions: [],
+				...result
+			});
 		});
 	}
 
 	async _deleteFileAnnotations(ids) {
-		let deletions = ids.map(id => this._fileAnnotationSources.get(id));
-		if (deletions.some(source => !source)) {
-			throw new Error('Cannot locate annotation in PDF file');
-		}
-		let result = await Zotero.PDFWorker.applyAnnotationChanges(
-			this.itemID,
-			{ deletions },
-			this._fileAnnotationFileToken,
-			true
-		);
-		this._fileAnnotationFileToken = result.fileToken;
-		for (let id of ids) {
-			this._fileAnnotationSources.delete(id);
-			this._fileAnnotations.delete(id);
-		}
-		Zotero.Reader.broadcastFileAnnotationChanges(this, {
-			upserts: [],
-			deletions: ids,
-			...result
+		return this._enqueueFileAnnotationMutation(async () => {
+			let deletions = ids.map(id => this._fileAnnotationSources.get(id));
+			if (deletions.some(source => !source)) {
+				throw new Error('Cannot locate annotation in PDF file');
+			}
+			let result = await Zotero.PDFWorker.applyAnnotationChanges(
+				this.itemID,
+				{ deletions },
+				{
+					fileToken: this._fileAnnotationFileToken,
+					fileRevision: this._fileAnnotationFileRevision
+				},
+				true
+			);
+			this._fileAnnotationFileToken = result.fileToken;
+			this._fileAnnotationFileRevision = result.fileRevision;
+			for (let id of ids) {
+				this._fileAnnotationSources.delete(id);
+				this._fileAnnotations.delete(id);
+			}
+			Zotero.Reader.broadcastFileAnnotationChanges(this, {
+				upserts: [],
+				deletions: ids,
+				...result
+			});
 		});
 	}
 
-	receiveFileAnnotationChanges({ upserts, deletions, fileToken, sources }) {
+	receiveFileAnnotationChanges({ upserts, deletions, fileToken, fileRevision, sources }) {
 		if (!this._fileAnnotationMode) return;
 		this._fileAnnotationFileToken = fileToken;
+		this._fileAnnotationFileRevision = fileRevision;
 		for (let annotation of upserts) {
 			annotation = JSON.parse(JSON.stringify(annotation));
 			this._fileAnnotations.set(annotation.id, annotation);
@@ -2890,6 +2917,7 @@ class Reader {
 		this._notifierID = Zotero.Notifier.registerObserver(this, ['item', 'setting', 'tab', 'api-key'], 'reader');
 		this._registeredListeners = [];
 		this._legacyFileAnnotationImportChecks = new Set();
+		this._fileAnnotationMutationQueues = new Map();
 		this.onChangeSidebarWidth = null;
 		this.onToggleSidebar = null;
 
@@ -3116,6 +3144,19 @@ class Reader {
 				reader.receiveFileAnnotationChanges(changes);
 			}
 		}
+	}
+
+	queueFileAnnotationMutation(itemID, fn) {
+		let previous = this._fileAnnotationMutationQueues.get(itemID) || Promise.resolve();
+		let promise = previous.catch(() => {}).then(fn);
+		this._fileAnnotationMutationQueues.set(itemID, promise);
+		let cleanup = () => {
+			if (this._fileAnnotationMutationQueues.get(itemID) === promise) {
+				this._fileAnnotationMutationQueues.delete(itemID);
+			}
+		};
+		promise.then(cleanup, cleanup);
+		return promise;
 	}
 	
 	getWindowStates() {
