@@ -219,7 +219,9 @@ class ReaderInstance {
 	}
 
 	async _refreshFileAnnotations() {
-		let oldIDs = [...this._fileAnnotations.keys()];
+		let oldIDs = this._internalReader
+			? this._internalReader._annotationManager._annotations.map(annotation => annotation.id)
+			: [...this._fileAnnotations.keys()];
 		let { annotations, fileToken, fileRevision } = await Zotero.PDFWorker.readAnnotations(
 			this.itemID,
 			true
@@ -764,7 +766,6 @@ class ReaderInstance {
 				try {
 					await Zotero.PDFWorker.rotatePages(this._item.id, pageIndexes, degrees, true);
 					await this.reload();
-					if (this._fileAnnotationMode) await this._refreshFileAnnotations();
 				}
 				catch (e) {
 					this.displayError(e);
@@ -780,7 +781,6 @@ class ReaderInstance {
 					try {
 						await Zotero.PDFWorker.deletePages(this._item.id, pageIndexes, true);
 						await this.reload();
-						if (this._fileAnnotationMode) await this._refreshFileAnnotations();
 					}
 					catch (e) {
 						this.displayError(e);
@@ -1048,6 +1048,20 @@ class ReaderInstance {
 	}
 
 	async reload() {
+		if (this._fileAnnotationMode) {
+			await Zotero.Reader.waitForFileAnnotationMutations(this.itemID);
+			try {
+				await this._refreshFileAnnotations();
+				this._fileAnnotationReadOnly = false;
+				this._internalReader.setReadOnly(this._isReadOnly());
+			}
+			catch (e) {
+				this._fileAnnotationReadOnly = true;
+				this.displayError(e);
+				this._internalReader.setReadOnly(true);
+				throw e;
+			}
+		}
 		let data = await this._getData();
 		this._internalReader.reload(Components.utils.cloneInto(data, this._iframeWindow));
 	}
@@ -3157,6 +3171,13 @@ class Reader {
 		};
 		promise.then(cleanup, cleanup);
 		return promise;
+	}
+
+	async waitForFileAnnotationMutations(itemID) {
+		let promise = this._fileAnnotationMutationQueues.get(itemID);
+		if (promise) {
+			await promise.catch(() => {});
+		}
 	}
 	
 	getWindowStates() {
