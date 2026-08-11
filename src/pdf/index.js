@@ -111,11 +111,97 @@ function getRawAnnotationMatches(structure, sources) {
 	return matches;
 }
 
+const SUPPORTED_ANNOTATION_TYPES = new Set([
+	'highlight',
+	'underline',
+	'note',
+	'text',
+	'image',
+	'ink',
+]);
+
+function normalizeAndValidateAnnotation(annotation, pageCount) {
+	annotation = JSON.parse(JSON.stringify(annotation));
+	annotation.comment = annotation.comment || '';
+	annotation.authorName = annotation.authorName || '';
+	annotation.tags = annotation.tags || [];
+	annotation.dateModified = annotation.dateModified || new Date().toISOString();
+
+	if (!annotation.id || typeof annotation.id !== 'string') {
+		throw new Error('PDF annotation must have a stable string ID');
+	}
+	if (!SUPPORTED_ANNOTATION_TYPES.has(annotation.type)) {
+		throw new Error(`Unsupported PDF annotation type '${annotation.type}'`);
+	}
+	if (!/^#[0-9a-f]{6}$/i.test(annotation.color || '')) {
+		throw new Error(`PDF annotation '${annotation.id}' has an invalid color`);
+	}
+	if (!Array.isArray(annotation.tags) || annotation.tags.some(tag => typeof tag !== 'string')) {
+		throw new Error(`PDF annotation '${annotation.id}' has invalid tags`);
+	}
+	if (isNaN(new Date(annotation.dateModified).getTime())) {
+		throw new Error(`PDF annotation '${annotation.id}' has an invalid modification date`);
+	}
+	let { position } = annotation;
+	if (!position || !Number.isInteger(position.pageIndex)
+		|| position.pageIndex < 0 || position.pageIndex >= pageCount) {
+		throw new Error(`PDF annotation '${annotation.id}' has an invalid page index`);
+	}
+
+	let rectTypes = ['highlight', 'underline', 'note', 'text', 'image'];
+	if (rectTypes.includes(annotation.type)) {
+		if (!Array.isArray(position.rects) || !position.rects.length
+			|| position.rects.some(rect => !Array.isArray(rect)
+				|| rect.length !== 4
+				|| rect.some(value => !Number.isFinite(value)))) {
+			throw new Error(`PDF annotation '${annotation.id}' has invalid rectangles`);
+		}
+	}
+	if (annotation.type === 'text'
+		&& (!Number.isFinite(position.fontSize) || !Number.isFinite(position.rotation))) {
+		throw new Error(`PDF annotation '${annotation.id}' has invalid text geometry`);
+	}
+	if (annotation.type === 'ink') {
+		if (!Number.isFinite(position.width) || position.width <= 0
+			|| !Array.isArray(position.paths) || !position.paths.length
+			|| position.paths.some(path => !Array.isArray(path)
+				|| path.length < 2
+				|| path.length % 2
+				|| path.some(value => !Number.isFinite(value)))) {
+			throw new Error(`PDF annotation '${annotation.id}' has invalid ink geometry`);
+		}
+	}
+	return annotation;
+}
+
+function verifyAnnotationChanges(structure, upserts, deletions) {
+	let annotations = readRawAnnotations(structure, { includeSource: true });
+	for (let { annotation } of upserts) {
+		let matches = annotations.filter(value => value.id === annotation.id);
+		if (matches.length !== 1 || matches[0].type !== annotation.type) {
+			throw new Error(
+				`PDF annotation '${annotation.id}' was not written exactly once as '${annotation.type}'`
+			);
+		}
+	}
+	let deletionMatches = getRawAnnotationMatches(structure, deletions);
+	for (let source of deletions) {
+		let matches = deletionMatches.get(JSON.stringify(source));
+		if (matches.length) {
+			throw new Error(`Deleted PDF annotation source still matched ${matches.length} objects`);
+		}
+	}
+}
+
 async function applyAnnotationChanges(buf, changes, password, dataProvider) {
 	let pdf = new PDFAssembler();
 	await pdf.init(buf, password);
 	let structure = await pdf.getPDFStructure();
-	let upserts = changes?.upserts || [];
+	let pageCount = structure['/Root']['/Pages']['/Kids'].length;
+	let upserts = (changes?.upserts || []).map(({ annotation, source }) => ({
+		annotation: normalizeAndValidateAnnotation(annotation, pageCount),
+		source,
+	}));
 	let deletions = changes?.deletions || [];
 	let sources = [
 		...upserts.map(x => x.source).filter(Boolean),
@@ -145,6 +231,7 @@ async function applyAnnotationChanges(buf, changes, password, dataProvider) {
 		let fontEmbedder = new FontEmbedder({ standardFontProvider });
 		await writeRawAnnotations(structure, annotations, fontEmbedder);
 	}
+	verifyAnnotationChanges(structure, upserts, deletions);
 
 	return await pdf.assemblePdf('ArrayBuffer');
 }

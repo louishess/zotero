@@ -12,7 +12,7 @@ export async function writeRawAnnotations(structure, annotations, fontEmbedder) 
 		}
 		let rawAnnotation = await annotationToRaw(annotation, fontEmbedder);
 		if (!rawAnnotation) {
-			continue;
+			throw new Error(`Unsupported PDF annotation type '${annotation.type}'`);
 		}
 		page['/Annots'].push(rawAnnotation);
 		if (['highlight', 'underline'].includes(annotation.type) && annotation.comment) {
