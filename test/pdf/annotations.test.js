@@ -30,6 +30,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import crypto from 'crypto';
 import * as pdfWorker from '../../src/pdf/index.js';
+import { PDFAssembler } from '../../src/pdf/pdfassembler.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -397,6 +398,53 @@ describe('PDF Worker', function () {
 			}),
 			/Annotation source matched 0 objects/
 		);
+	});
+
+	it('should write interoperable note and underline appearance dictionaries', async function () {
+		let buf = fs.readFileSync(path.join(pdfFixturesDir, 'full', '1.pdf'));
+		let base = {
+			color: '#ff8c19',
+			authorName: 'Test Author',
+			dateModified: '2026-01-02T03:04:05.000Z',
+			tags: ['portable'],
+		};
+		buf = await pdfWorker.applyAnnotationChanges(buf, {
+			upserts: [{
+				annotation: {
+					...base,
+					id: 'APNOTE01',
+					type: 'note',
+					comment: 'Portable note',
+					position: { pageIndex: 0, rects: [[80, 640, 102, 662]] },
+				}
+			}, {
+				annotation: {
+					...base,
+					id: 'APUNDER1',
+					type: 'underline',
+					comment: '',
+					position: { pageIndex: 0, rects: [[80, 680, 160, 692]] },
+				}
+			}]
+		});
+
+		let pdf = new PDFAssembler();
+		await pdf.init(buf);
+		let structure = await pdf.getPDFStructure();
+		let rawAnnotations = structure['/Root']['/Pages']['/Kids'][0]['/Annots'];
+		let note = rawAnnotations.find(annotation => annotation['/Zotero:Key'] === '(APNOTE01)');
+		let underline = rawAnnotations.find(annotation => annotation['/Zotero:Key'] === '(APUNDER1)');
+		assert.equal(note['/Subtype'], '/Text');
+		assert.equal(note['/Name'], '/Comment');
+		assert.equal(note['/Contents'], '(Portable note)');
+		assert.equal(underline['/Subtype'], '/Underline');
+		assert.deepEqual(underline['/QuadPoints'], [80, 692, 160, 692, 80, 680, 160, 680]);
+		assert.deepEqual(underline['/AP']['/N']['/BBox'], [0, 0, 80, 12]);
+		assert.match(underline['/AP']['/N'].stream, / RG\n1\.5 w\n/);
+
+		let annotations = await pdfWorker.readAnnotations(buf);
+		assert.equal(annotations.find(annotation => annotation.id === 'APNOTE01').comment, 'Portable note');
+		assert.equal(annotations.find(annotation => annotation.id === 'APUNDER1').type, 'underline');
 	});
 
 	it('should preserve annotation text outside the BMP', async function () {

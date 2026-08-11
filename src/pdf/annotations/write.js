@@ -133,6 +133,8 @@ async function annotationToRaw(annotation, fontEmbedder) {
 			'/Type': '/Annot',
 			'/Rect': containerRect,
 			'/Subtype': '/Text',
+			'/Name': '/Comment',
+			'/Open': false,
 			'/M': '(' + dateToRaw(annotation.dateModified) + ')',
 			'/T': '(' + stringToRaw(annotation.authorName) + ')',
 			'/Contents': '(' + stringToRaw(annotation.comment) + ')',
@@ -417,11 +419,17 @@ async function annotationToRaw(annotation, fontEmbedder) {
 	else if (annotation.type === 'underline') {
 		let p = '';
 		for (let rect of annotation.position.rects) {
-			p += rect[0] + ' ' + rect[1] + ' m\n';
-			p += rect[2] + ' ' + rect[1] + ' l\n';
-			p += rect[2] + ' ' + (rect[1] + 3) + ' l\n';
-			p += rect[0] + ' ' + (rect[1] + 3) + ' l\nh\n';
+			let x1 = rect[0] - containerRect[0];
+			let x2 = rect[2] - containerRect[0];
+			let y = Math.max(0.75, rect[1] - containerRect[1] + 0.75);
+			p += `${x1} ${y} m\n${x2} ${y} l\n`;
 		}
+		let appearanceBox = [
+			0,
+			0,
+			containerRect[2] - containerRect[0],
+			containerRect[3] - containerRect[1]
+		];
 
 		let res = {
 			'/Type': '/Annot',
@@ -436,9 +444,12 @@ async function annotationToRaw(annotation, fontEmbedder) {
 			'/Zotero:AuthorName': '(' + stringToRaw(annotation.authorName) + ')',
 			'/F': 4,
 			'/C': colorToRaw(annotation.color),
+			'/CA': 1,
+			'/Border': [0, 0, 0],
 			'/AP': {
 				'/N': {
-					'/BBox': containerRect,
+					'/BBox': appearanceBox,
+					'/Matrix': [1, 0, 0, 1, 0, 0],
 					'/FormType': 1,
 					'/Resources': {
 						'/ExtGState': {
@@ -455,7 +466,7 @@ async function annotationToRaw(annotation, fontEmbedder) {
 					},
 					'/Subtype': '/Form',
 					'/Type': '/XObject',
-					stream: '/G0 gs\n' + colorToRaw(annotation.color).join(' ') + ' rg\n' + p + 'f\n',
+					stream: '/G0 gs\n' + colorToRaw(annotation.color).join(' ') + ' RG\n1.5 w\n' + p + 'S\n',
 					num: 0,
 					gen: 0
 				}
