@@ -8,7 +8,13 @@ Replace the current Boolean preference with one annotation-storage mode:
 - **PDF-only Annotations** — current file-backed behavior; no annotation database items.
 - **PDF and Zotero Annotations** — matching annotations in both stores using the same stable ID.
 
-Fresh installations default to **Standard**. Existing explicit `saveToFile=true` preferences migrate to **PDF-only Annotations**. Mode changes apply lazily when a PDF is next opened or reloaded.
+Fresh installations default to **Standard**. A preference-version migration runs
+only for existing profiles: an explicit legacy `saveToFile=false` becomes
+**Standard**, while `true` or the old default-without-a-user-value becomes
+**PDF-only Annotations**. This preserves users who actually ran the existing
+file-backed build, whose default was `true` and therefore usually left no user
+preference to detect. The migration writes `storageMode` before removing the old
+Boolean. Mode changes apply lazily when a PDF is next opened or reloaded.
 
 Native annotation objects synchronize through Zotero data sync; the modified PDF synchronizes separately through Zotero file storage, Box, or another file service.
 
@@ -18,7 +24,11 @@ Native annotation objects synchronize through Zotero data sync; the modified PDF
 
 - Add `reader.annotations.storageMode` with values `standard`, `pdf-only`, and `pdf-and-zotero`.
 - Replace direct `saveToFile` checks with a central mode getter and separate PDF-writability capability check.
-- Migrate explicit legacy Boolean values; remove the old Boolean after successful migration.
+- Increment Zotero's preference migration version. For an existing profile,
+  map explicit legacy `false` to `standard` and both explicit `true` and the
+  former default `true` to `pdf-only`; fresh profiles skip migration and use the
+  new `standard` default.
+- Remove the old Boolean only after `storageMode` has been written and validated.
 - Force unsupported sessions—groups, EPUBs, snapshots, read-only PDFs, and non-editable libraries—to Standard behavior.
 - Add shared test helpers for selecting modes and asserting PDF/database state.
 
@@ -80,18 +90,27 @@ Native annotation objects synchronize through Zotero data sync; the modified PDF
 - Mode changes affect newly opened or reloaded readers, not active editing sessions.
 - Warn once before transitions that erase a representation.
 
-Lazy, ID-preserving transitions:
+Lazy, sync-safe transitions:
 
 | From → To | Conversion |
 |---|---|
 | Standard → Dual | Embed native items and retain them |
-| PDF-only → Dual | Create native items using embedded IDs |
-| Dual → PDF-only | Verify PDF copies, then erase native items |
-| Standard → PDF-only | Embed native items, verify, then erase them |
+| PDF-only → Dual | Create native items using the current embedded IDs |
+| Dual → PDF-only | Rewrite verified PDF copies with fresh PDF-only IDs, then erase the old native items |
+| Standard → PDF-only | Write and verify PDF copies with fresh PDF-only IDs, then erase the native items |
 | PDF-only → Standard | Create native items, verify, then remove mirrored PDF annotations |
 | Dual → Standard | Retain native items and remove mirrored PDF annotations |
 
 External and unsupported annotations remain untouched until explicitly adopted.
+
+Native item keys that have been erased must never be recreated. Zotero records
+their deletion in `syncDeleteLog`, and the deletion may already have propagated
+to another client. Every transition that leaves database-backed storage must
+therefore rotate each mirrored annotation to a newly generated PDF-only ID
+*before* erasing its native item. A later transition back to Standard or Dual
+may safely use that current PDF-only ID as a new Zotero key. Representation-only
+removal during a mode transition does not create an annotation tombstone;
+tombstones are reserved for user deletions.
 
 **Milestone:** UI tests verify exact-one selection, keyboard/ARIA behavior, localization, tooltips, legacy migration, and external preference updates.
 
@@ -103,6 +122,11 @@ External and unsupported annotations remain untouched until explicitly adopted.
   - PDF-only: PDF only.
   - Dual: one embedded annotation and one native item with the same key.
 - Cover every lazy mode transition and interruption during each conversion phase.
+- Verify that pre-existing profiles with no explicit legacy Boolean retain
+  PDF-only behavior while fresh profiles default to Standard.
+- Verify that transitions out of database-backed storage rotate embedded IDs,
+  create ordinary Zotero sync deletions for the old keys, and never recreate a
+  key found in the local delete log or a previously synchronized generation.
 - Test PDF-first crash recovery, database repair, tombstone survival, stale Box copies, remote Zotero changes, and deleted-annotation non-resurrection.
 - Test exact duplicates, ambiguous external annotations, unsupported annotations, page rotation/deletion, two readers, and real external-file replacement.
 - Test each conflict-dialog resolution and cancellation/read-only recovery.
@@ -137,5 +161,10 @@ Keep reconciliation tests in a dedicated file so parallel branches do not repeat
 - The PDF is the recovery authority in dual mode, while native annotation objects provide search, notes, APIs, and Zotero data sync.
 - Unknown one-sided annotations without a trustworthy common digest produce a warning instead of automatic adoption or deletion.
 - Tombstones contain no annotation text and remain invisible to ordinary PDF readers.
-- Fresh installations default to Standard; explicit legacy file-backed users retain PDF-only behavior.
+- Fresh installations default to Standard; all profiles that ran the legacy
+  default-true file-backed build retain PDF-only behavior, even without an
+  explicit Boolean user preference.
+- A stable ID is preserved while an annotation remains in a storage generation.
+  Leaving database-backed storage deliberately starts a fresh PDF-only identity
+  generation so a synchronized Zotero deletion is never resurrected.
 - Group libraries and unsupported attachment types retain stock Zotero behavior.
