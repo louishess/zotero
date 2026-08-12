@@ -58,6 +58,32 @@ Zotero_Preferences.Advanced = {
 			this.updateLocalAPIUI();
 		});
 	},
+
+
+	onAnnotationStorageModeChange: function (event) {
+		let group = event.currentTarget;
+		let previousMode = Zotero.Prefs.get('reader.annotations.storageMode');
+		let nextMode = group.value;
+		if (!previousMode || previousMode === nextMode || nextMode === 'pdf-and-zotero') {
+			return;
+		}
+
+		let confirmed = this._confirmAnnotationStorageModeChange();
+		if (!confirmed) {
+			group.value = previousMode;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+		}
+	},
+
+
+	_confirmAnnotationStorageModeChange: function () {
+		return Services.prompt.confirm(
+			window,
+			Zotero.ftl.formatValueSync('preferences-advanced-pdf-annotations-transition-title'),
+			Zotero.ftl.formatValueSync('preferences-advanced-pdf-annotations-transition-warning')
+		);
+	},
 	
 	
 	updateTranslators: async function () {

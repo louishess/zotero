@@ -1,4 +1,98 @@
 describe("Advanced Preferences", function () {
+	describe("PDF Annotations", function () {
+		const STORAGE_MODE_PREF = 'reader.annotations.storageMode';
+		let win;
+
+		async function loadAdvancedPreferences() {
+			win = await loadWindow("chrome://zotero/content/preferences/preferences.xhtml", {
+				pane: 'zotero-prefpane-advanced'
+			});
+			await win.Zotero_Preferences.waitForFirstPaneLoad();
+			return win.document.getElementById('annotation-storage-mode');
+		}
+
+		function selectMode(group, mode) {
+			group.value = mode;
+			group.dispatchEvent(new win.Event('command', {
+				bubbles: true,
+				cancelable: true,
+			}));
+		}
+
+		afterEach(function () {
+			sinon.restore();
+			if (win && !win.closed) {
+				win.close();
+			}
+			win = null;
+		});
+
+		it("should show exactly one selected mode and follow external preference changes", async function () {
+			Zotero.Prefs.set(STORAGE_MODE_PREF, 'standard');
+			let group = await loadAdvancedPreferences();
+			let radios = [...group.querySelectorAll('radio')];
+
+			assert.lengthOf(radios, 3);
+			assert.equal(group.value, 'standard');
+			assert.equal(group.selectedItem.value, 'standard');
+			assert.equal(group.getAttribute('aria-labelledby'),
+				'preferences-advanced-pdf-annotations-title');
+			assert.equal(group.getAttribute('aria-describedby'),
+				'preferences-advanced-pdf-annotations-scope');
+			for (let radio of radios) {
+				assert.isNotEmpty(radio.getAttribute('tooltiptext'));
+			}
+
+			Zotero.Prefs.set(STORAGE_MODE_PREF, 'pdf-and-zotero');
+			await waitForCallback(() => group.value === 'pdf-and-zotero', 20, 10);
+			assert.equal(group.selectedItem.value, 'pdf-and-zotero');
+			assert.lengthOf(radios.filter(radio => radio.selected), 1);
+		});
+
+		it("should warn once only for transitions that erase a representation", async function () {
+			Zotero.Prefs.set(STORAGE_MODE_PREF, 'standard');
+			let group = await loadAdvancedPreferences();
+			let confirm = sinon.stub(
+				win.Zotero_Preferences.Advanced,
+				'_confirmAnnotationStorageModeChange'
+			).returns(true);
+			let cases = [
+				['standard', 'pdf-only', true],
+				['pdf-and-zotero', 'pdf-only', true],
+				['pdf-only', 'standard', true],
+				['pdf-and-zotero', 'standard', true],
+				['standard', 'pdf-and-zotero', false],
+				['pdf-only', 'pdf-and-zotero', false],
+			];
+
+			for (let [from, to, shouldWarn] of cases) {
+				Zotero.Prefs.set(STORAGE_MODE_PREF, from);
+				await waitForCallback(() => group.value === from, 20, 10);
+				confirm.resetHistory();
+				selectMode(group, to);
+
+				assert.equal(confirm.callCount, shouldWarn ? 1 : 0, `${from} -> ${to}`);
+				assert.equal(Zotero.Prefs.get(STORAGE_MODE_PREF), to, `${from} -> ${to}`);
+			}
+		});
+
+		it("should restore the previous selection when a warning is cancelled", async function () {
+			Zotero.Prefs.set(STORAGE_MODE_PREF, 'standard');
+			let group = await loadAdvancedPreferences();
+			let confirm = sinon.stub(
+				win.Zotero_Preferences.Advanced,
+				'_confirmAnnotationStorageModeChange'
+			).returns(false);
+
+			selectMode(group, 'pdf-only');
+
+			assert.isTrue(confirm.calledOnce);
+			assert.equal(group.value, 'standard');
+			assert.equal(group.selectedItem.value, 'standard');
+			assert.equal(Zotero.Prefs.get(STORAGE_MODE_PREF), 'standard');
+		});
+	});
+
 	describe("Files & Folders", function () {
 		describe("Linked Attachment Base Directory", function () {
 			var setBaseDirectory = async function (basePath) {

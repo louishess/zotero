@@ -75,6 +75,40 @@
 				native="true"
 			/>
 		</groupbox>
+
+		<groupbox aria-labelledby="preferences-advanced-pdf-annotations-title">
+			<label>
+				<html:h2
+					id="preferences-advanced-pdf-annotations-title"
+					data-l10n-id="preferences-advanced-pdf-annotations-title"
+				/>
+			</label>
+			<radiogroup
+				id="annotation-storage-mode"
+				orient="horizontal"
+				aria-labelledby="preferences-advanced-pdf-annotations-title"
+				aria-describedby="preferences-advanced-pdf-annotations-scope"
+				preference="extensions.zotero.reader.annotations.storageMode"
+				oncommand="Zotero_Preferences.Advanced.onAnnotationStorageModeChange(event)"
+			>
+				<radio
+					value="standard"
+					data-l10n-id="preferences-advanced-pdf-annotations-standard"
+				/>
+				<radio
+					value="pdf-only"
+					data-l10n-id="preferences-advanced-pdf-annotations-pdf-only"
+				/>
+				<radio
+					value="pdf-and-zotero"
+					data-l10n-id="preferences-advanced-pdf-annotations-dual"
+				/>
+			</radiogroup>
+			<description
+				id="preferences-advanced-pdf-annotations-scope"
+				data-l10n-id="preferences-advanced-pdf-annotations-scope"
+			/>
+		</groupbox>
 	</vbox>
 	
 	<vbox class="main-section" role="group" aria-label="&zotero.preferences.advanced.filesAndFolders;">
