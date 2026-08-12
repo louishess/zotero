@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+
+<?xml-stylesheet href="chrome://global/skin/global.css"?>
+<?xml-stylesheet href="chrome://zotero/skin/zotero.css"?>
+
+<window
+	xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+	xmlns:html="http://www.w3.org/1999/xhtml"
+	id="annotation-storage-conflict-window"
+	data-l10n-id="annotation-storage-conflict-window"
+	onload="Zotero.AnnotationStorageConflictDialog.init()"
+	style="min-width: 620px; min-height: 360px;"
+>
+	<dialog id="annotation-storage-conflict-dialog" buttons="cancel,accept">
+		<linkset>
+			<html:link rel="localization" href="branding/brand.ftl"/>
+			<html:link rel="localization" href="reader.ftl"/>
+		</linkset>
+		<script src="chrome://zotero/content/include.js"/>
+		<script src="chrome://zotero/content/annotationStorageConflictDialog.js"/>
+
+		<description data-l10n-id="annotation-storage-conflict-description"/>
+		<scrollbox orient="vertical" flex="1" id="annotation-storage-conflicts"/>
+	</dialog>
+</window>

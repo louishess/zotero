@@ -15,11 +15,11 @@ describe("Reader", function () {
 
 	describe('PDF Reader', function () {
 		afterEach(function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			Zotero.Prefs.set('reader.annotations.storageMode', 'standard');
 		});
 
 		it('should create/update annotations', async function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', false);
+			Zotero.Prefs.set('reader.annotations.storageMode', 'standard');
 			var attachment = await importFileAttachment('test.pdf');
 
 			var reader = await Zotero.Reader.open(attachment.itemID);
@@ -206,7 +206,7 @@ describe("Reader", function () {
 		});
 
 		it('should create, update, tag, and delete annotations in the PDF only', async function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
 			let attachment = await importFileAttachment('test.pdf');
 			let reader = await Zotero.Reader.open(attachment.itemID);
 			await reader._initPromise;
@@ -258,8 +258,8 @@ describe("Reader", function () {
 			reader.close();
 		});
 
-		it('should migrate and later delete a legacy annotation by its stable ID', async function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+		it('should rotate and later delete a legacy annotation on entry to PDF-only', async function () {
+			Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
 			let attachment = await importFileAttachment('test.pdf');
 			let legacy = await Zotero.Annotations.saveFromJSON(attachment, {
 				key: Zotero.DataObjectUtilities.generateKey(),
@@ -289,19 +289,21 @@ describe("Reader", function () {
 			assert.isTrue(reader._fileAnnotationMode);
 			assert.lengthOf(attachment.getAnnotations(), 0);
 			let result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
-			assert.isOk(result.annotations.find(x => x.id === legacy.key));
+			assert.lengthOf(result.annotations, 1);
+			let migratedID = result.annotations[0].id;
+			assert.notEqual(migratedID, legacy.key);
 
 			assert.equal(reader._internalReader.deleteAnnotations(
-				Components.utils.cloneInto([legacy.key], reader._iframeWindow)
+				Components.utils.cloneInto([migratedID], reader._iframeWindow)
 			), 1);
-			await waitForCallback(() => !reader._fileAnnotations.has(legacy.key), 20, 10);
+			await waitForCallback(() => !reader._fileAnnotations.has(migratedID), 20, 10);
 			result = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
-			assert.isFalse(result.annotations.some(x => x.id === legacy.key));
+			assert.isFalse(result.annotations.some(x => x.id === migratedID));
 			reader.close();
 		});
 
 		it('should persist every supported annotation type across rapid edits and reopen', async function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
 			let attachment = await importFileAttachment('test.pdf');
 			let reader = await Zotero.Reader.open(attachment.id);
 			await reader._initPromise;
@@ -401,7 +403,7 @@ describe("Reader", function () {
 		});
 
 		it('should rebase queued Zotero writes but reject an external PDF change', async function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
 			let attachment = await importFileAttachment('test.pdf');
 			let initial = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
 			let makeAnnotation = (id, y) => ({
@@ -470,7 +472,7 @@ describe("Reader", function () {
 		});
 
 		it('should synchronize file-backed changes between two open readers', async function () {
-			Zotero.Prefs.set('reader.annotations.saveToFile', true);
+			Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
 			let attachment = await importFileAttachment('test.pdf');
 			let reader1;
 			let reader2;

@@ -218,16 +218,60 @@ class ReaderInstance {
 		return this._prepareFileAnnotations(result.annotations);
 	}
 
+	async _loadCoordinatedAnnotations(reason = 'reader-open') {
+		let result = await Zotero.AnnotationStorageCoordinator.reconcile(this.itemID, reason);
+		result = await this._resolveAnnotationStorageConflicts(result);
+		this._annotationStorageMode = result.effectiveMode;
+		this._fileAnnotationFileToken = result.fileToken;
+		this._fileAnnotationFileRevision = result.fileRevision;
+		this._fileAnnotationSources = new Map(Object.entries(result.sources || {}));
+		return this._prepareFileAnnotations(result.annotations || []);
+	}
+
+	async _resolveAnnotationStorageConflicts(result) {
+		if (result.conflicts.length) {
+			let resolutions = this._promptAnnotationStorageConflicts(result.conflicts);
+			if (!resolutions) {
+				this._fileAnnotationReadOnly = true;
+				this._internalReader?.setReadOnly(true);
+				return { ...result, conflictResolutionCancelled: true };
+			}
+			result = await Zotero.AnnotationStorageCoordinator.resolveConflicts(
+				this.itemID,
+				resolutions
+			);
+		}
+		return result;
+	}
+
+	_promptAnnotationStorageConflicts(conflicts) {
+		let io = { conflicts, resolutions: null };
+		let win = this._window || Services.wm.getMostRecentWindow('navigator:browser');
+		win.openDialog(
+			'chrome://zotero/content/annotationStorageConflictDialog.xhtml',
+			'',
+			'chrome,modal,centerscreen,resizable',
+			io
+		);
+		return io.resolutions;
+	}
+
 	async _refreshFileAnnotations() {
 		let oldIDs = this._internalReader
 			? this._internalReader._annotationManager._annotations.map(annotation => annotation.id)
 			: [...this._fileAnnotations.keys()];
-		let { annotations, fileToken, fileRevision } = await Zotero.PDFWorker.readAnnotations(
-			this.itemID,
-			true
-		);
+		let result = this._annotationStorageMode === 'pdf-and-zotero'
+			? await Zotero.AnnotationStorageCoordinator.reconcile(this.itemID, 'external-file-change')
+			: await Zotero.PDFWorker.readAnnotations(this.itemID, true);
+		if (this._annotationStorageMode === 'pdf-and-zotero') {
+			result = await this._resolveAnnotationStorageConflicts(result);
+		}
+		let { annotations, fileToken, fileRevision } = result;
 		this._fileAnnotationFileToken = fileToken;
 		this._fileAnnotationFileRevision = fileRevision;
+		if (result.sources) {
+			this._fileAnnotationSources = new Map(Object.entries(result.sources));
+		}
 		let prepared = this._prepareFileAnnotations(annotations);
 		let newIDs = new Set(prepared.map(annotation => annotation.id));
 		let deletions = oldIDs.filter(id => !newIDs.has(id));
@@ -242,8 +286,10 @@ class ReaderInstance {
 			deletions,
 			fileToken,
 			fileRevision,
-			sources: Object.fromEntries(this._fileAnnotationSources)
+			sources: Object.fromEntries(this._fileAnnotationSources),
+			conflictResolutionCancelled: !!result.conflictResolutionCancelled
 		});
+		return result;
 	}
 
 	_enqueueFileAnnotationMutation(fn) {
@@ -265,6 +311,30 @@ class ReaderInstance {
 		}
 
 		return this._enqueueFileAnnotationMutation(async () => {
+			if (this._annotationStorageMode === 'pdf-and-zotero') {
+				let result = await Zotero.AnnotationStorageCoordinator.applyChanges(
+					this.itemID,
+					{ upserts: annotations },
+					{
+						fileToken: this._fileAnnotationFileToken,
+						fileRevision: this._fileAnnotationFileRevision
+					}
+				);
+				this._fileAnnotationFileToken = result.fileToken;
+				this._fileAnnotationFileRevision = result.fileRevision;
+				for (let annotation of annotations) {
+					this._fileAnnotations.set(annotation.id, JSON.parse(JSON.stringify(annotation)));
+					if (result.sources[annotation.id]) {
+						this._fileAnnotationSources.set(annotation.id, result.sources[annotation.id]);
+					}
+				}
+				Zotero.Reader.broadcastFileAnnotationChanges(this, {
+					upserts: annotations,
+					deletions: [],
+					...result
+				});
+				return;
+			}
 			let upserts = annotations.map(annotation => ({
 				annotation: JSON.parse(JSON.stringify(annotation)),
 				source: this._fileAnnotationSources.get(annotation.id)
@@ -295,6 +365,28 @@ class ReaderInstance {
 
 	async _deleteFileAnnotations(ids) {
 		return this._enqueueFileAnnotationMutation(async () => {
+			if (this._annotationStorageMode === 'pdf-and-zotero') {
+				let result = await Zotero.AnnotationStorageCoordinator.applyChanges(
+					this.itemID,
+					{ deletions: ids },
+					{
+						fileToken: this._fileAnnotationFileToken,
+						fileRevision: this._fileAnnotationFileRevision
+					}
+				);
+				this._fileAnnotationFileToken = result.fileToken;
+				this._fileAnnotationFileRevision = result.fileRevision;
+				for (let id of ids) {
+					this._fileAnnotationSources.delete(id);
+					this._fileAnnotations.delete(id);
+				}
+				Zotero.Reader.broadcastFileAnnotationChanges(this, {
+					upserts: [],
+					deletions: ids,
+					...result
+				});
+				return;
+			}
 			let deletions = ids.map(id => this._fileAnnotationSources.get(id));
 			if (deletions.some(source => !source)) {
 				throw new Error('Cannot locate annotation in PDF file');
@@ -322,8 +414,19 @@ class ReaderInstance {
 		});
 	}
 
-	receiveFileAnnotationChanges({ upserts, deletions, fileToken, fileRevision, sources }) {
+	receiveFileAnnotationChanges({
+		upserts,
+		deletions,
+		fileToken,
+		fileRevision,
+		sources,
+		conflictResolutionCancelled
+	}) {
 		if (!this._fileAnnotationMode) return;
+		if (conflictResolutionCancelled) {
+			this._fileAnnotationReadOnly = true;
+			this._internalReader?.setReadOnly(true);
+		}
 		this._fileAnnotationFileToken = fileToken;
 		this._fileAnnotationFileRevision = fileRevision;
 		for (let annotation of upserts) {
@@ -357,12 +460,13 @@ class ReaderInstance {
 		let annotationItems = this._item.getAnnotations();
 		let annotations;
 		let fileAnnotationError;
-		if (!preview && await Zotero.PDFWorker.canUseFileAnnotations(this._item)) {
-			let hasInternalAnnotations = annotationItems.some(item => !item.annotationIsExternal);
-			if (!hasInternalAnnotations || this._promptToStoreAnnotationsInFile()) {
+		if (!preview) {
+			let storageMode = await Zotero.PDFWorker.getEffectiveAnnotationStorageMode(this._item);
+			if (storageMode !== 'standard') {
 				this._fileAnnotationMode = true;
+				this._annotationStorageMode = storageMode;
 				try {
-					annotations = await this._loadFileAnnotations({ migrate: annotationItems.length > 0 });
+					annotations = await this._loadCoordinatedAnnotations('reader-open');
 				}
 				catch (e) {
 					Zotero.logError(e);
@@ -370,12 +474,18 @@ class ReaderInstance {
 					this._fileAnnotationReadOnly = true;
 					annotations = [];
 				}
-				annotationItems = [];
+				annotationItems = storageMode === 'pdf-and-zotero'
+					? this._item.getAnnotations().filter(item => !item.annotationIsExternal)
+					: [];
 			}
-			else {
-				await Zotero.Reader.triggerAnnotationsImportCheck(this.itemID, { forceLegacy: true });
-				annotationItems = this._item.getAnnotations();
-			}
+				else {
+					if (this._item.isPDFAttachment()) {
+						// Reconciliation performs lazy Dual/PDF-only -> Standard conversion
+						// when local state indicates that a mirrored representation exists.
+						await Zotero.AnnotationStorageCoordinator.reconcile(this.itemID, 'reader-open');
+					}
+					annotationItems = this._item.getAnnotations();
+				}
 		}
 		if (!annotations) {
 			annotations = (await Promise.all(annotationItems.map(x => this._getAnnotation(x)))).filter(x => x);
@@ -588,7 +698,7 @@ class ReaderInstance {
 			},
 			onOpenTagsPopup: (id, x, y) => {
 				let key = id;
-				if (this._fileAnnotationMode) {
+				if (this._annotationStorageMode === 'pdf-only') {
 					let item = this._getFileAnnotationTagItem(key);
 					if (item) this._openTagsPopup(item, x, y);
 					return;
@@ -775,12 +885,25 @@ class ReaderInstance {
 					this._internalReader.unfreeze();
 				}
 			},
-			onDeletePages: async (pageIndexes) => {
-				if (this._promptToDeletePages(pageIndexes.length)) {
-					this._internalReader.freeze();
-					try {
-						await Zotero.PDFWorker.deletePages(this._item.id, pageIndexes, true);
-						await this.reload();
+				onDeletePages: async (pageIndexes) => {
+					if (this._promptToDeletePages(pageIndexes.length)) {
+						this._internalReader.freeze();
+						try {
+							let deletedAnnotationIDs = this._fileAnnotationMode
+								? [...this._fileAnnotations.values()]
+									.filter(annotation => pageIndexes.includes(annotation.position?.pageIndex))
+									.map(annotation => annotation.id)
+								: [];
+							await Zotero.PDFWorker.deletePages(this._item.id, pageIndexes, true);
+							if (deletedAnnotationIDs.length) {
+								// The structural PDF edit is already durable. Record deletions
+								// through the coordinator so stale Box copies cannot resurrect them.
+								await Zotero.AnnotationStorageCoordinator.applyChanges(
+									this.itemID,
+									{ deletions: deletedAnnotationIDs }
+								);
+							}
+							await this.reload();
 					}
 					catch (e) {
 						this.displayError(e);
@@ -1051,9 +1174,11 @@ class ReaderInstance {
 		if (this._fileAnnotationMode) {
 			await Zotero.Reader.waitForFileAnnotationMutations(this.itemID);
 			try {
-				await this._refreshFileAnnotations();
-				this._fileAnnotationReadOnly = false;
-				this._internalReader.setReadOnly(this._isReadOnly());
+				let result = await this._refreshFileAnnotations();
+				if (!result.conflictResolutionCancelled) {
+					this._fileAnnotationReadOnly = false;
+					this._internalReader.setReadOnly(this._isReadOnly());
+				}
 			}
 			catch (e) {
 				this._fileAnnotationReadOnly = true;
@@ -3089,6 +3214,41 @@ class Reader {
 		}
 		// Listen for parent item, PDF attachment and its annotations updates
 		else if (type === 'item') {
+			let coordinatorOwned = ids.length && ids.every(id => (
+				extraData?.[id]?.annotationStorageCoordinator
+			));
+			if (!coordinatorOwned && ['add', 'modify', 'delete'].includes(event)) {
+				let dualReader = this._readers.find(reader => {
+					if (reader._annotationStorageMode !== 'pdf-and-zotero') return false;
+					let item = Zotero.Items.get(reader.itemID);
+					if (!item) return false;
+					if (event === 'delete') {
+						return reader.annotationItemIDs.some(id => ids.includes(id));
+					}
+					return item.getAnnotations().some(annotation => ids.includes(annotation.id));
+				});
+				if (dualReader) {
+					this.queueFileAnnotationMutation(dualReader.itemID, async () => {
+						let result = await dualReader._refreshFileAnnotations();
+						let item = Zotero.Items.get(dualReader.itemID);
+						let annotationItemIDs = item ? item.getAnnotations().map(x => x.id) : [];
+						for (let reader of this._readers) {
+							if (reader.itemID === dualReader.itemID) {
+								reader.annotationItemIDs = annotationItemIDs;
+								if (result.conflictResolutionCancelled) {
+									reader._fileAnnotationReadOnly = true;
+									reader._internalReader?.setReadOnly(true);
+								}
+							}
+						}
+					}).catch(e => {
+						dualReader._fileAnnotationReadOnly = true;
+						dualReader.displayError(e);
+						dualReader._internalReader?.setReadOnly(true);
+					});
+					return;
+				}
+			}
 			for (let reader of this._readers.slice()) {
 				if (event === 'delete' && ids.includes(reader.itemID)) {
 					reader.close();
@@ -3341,7 +3501,7 @@ class Reader {
 		let mtime = await item.attachmentModificationTime;
 		let mtimeSeconds = Math.floor(mtime / 1000);
 		let checkKey = `${itemID}:${mtimeSeconds}`;
-		let shouldCheckFileAfterDisabling = !Zotero.Prefs.get('reader.annotations.saveToFile')
+		let shouldCheckFileAfterDisabling = Zotero.PDFWorker.getConfiguredAnnotationStorageMode() === 'standard'
 			&& !item.getAnnotations().length
 			&& !this._legacyFileAnnotationImportChecks.has(checkKey);
 		if (item.attachmentLastProcessedModificationTime < mtimeSeconds
