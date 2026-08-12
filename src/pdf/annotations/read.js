@@ -4,6 +4,7 @@ import { getRawPageView, getString, isValidNumber, getAnnotationID, isTransferab
 
 import * as utils from '../utils.js';
 import * as putils from '../putils.js';
+import { readBaseDigest } from './reconciliation.js';
 
 const NOTE_SIZE = 22;
 
@@ -21,7 +22,7 @@ function getAnnotationFingerprint(annotation) {
 function getAnnotationSource(rawAnnot, annotation, pageIndex, occurrence) {
 	let id = getAnnotationID(rawAnnot);
 	if (id) {
-		return { type: 'zotero', id };
+		return { type: 'zotero', id, pageIndex, occurrence };
 	}
 
 	let name = getString(rawAnnot['/NM']);
@@ -54,10 +55,13 @@ export function readRawAnnotations(structure, { includeSource = false } = {}) {
 			let view = getRawPageView(rawPages[pageIndex]);
 			let annotation = readRawAnnotation(rawAnnot, pageIndex, view);
 			if (annotation) {
-				if (includeSource) {
+			if (includeSource) {
 					let fingerprint = getAnnotationFingerprint(annotation);
+					let id = getAnnotationID(rawAnnot);
 					let name = getString(rawAnnot['/NM']);
-					let occurrenceKey = name
+					let occurrenceKey = id
+						? `${pageIndex}:zotero:${id}`
+						: name
 						? `${pageIndex}:nm:${name}`
 						: `${pageIndex}:fingerprint:${fingerprint}`;
 					let occurrence = occurrences.get(occurrenceKey) || 0;
@@ -80,7 +84,9 @@ export function readRawAnnotations(structure, { includeSource = false } = {}) {
 export function annotationMatchesSource(rawAnnot, annotation, source, pageIndex, occurrence) {
 	if (!source) return false;
 	if (source.type === 'zotero') {
-		return getAnnotationID(rawAnnot) === source.id;
+		return getAnnotationID(rawAnnot) === source.id
+			&& (source.pageIndex === undefined || pageIndex === source.pageIndex)
+			&& (source.occurrence === undefined || occurrence === source.occurrence);
 	}
 	if (source.type === 'nm') {
 		return pageIndex === source.pageIndex
@@ -322,6 +328,8 @@ export function readRawAnnotation(rawAnnot, pageIndex, view) {
 	}
 
 	annotation.transferable = isTransferable(rawAnnot);
+	let baseDigest = readBaseDigest(rawAnnot);
+	if (baseDigest) annotation.baseDigest = baseDigest;
 
 	return annotation;
 }

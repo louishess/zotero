@@ -1,7 +1,9 @@
 import {
 	writeAnnotations,
 	readAnnotations,
+	readAnnotationState,
 	applyAnnotationChanges,
+	getAnnotationDigest,
 	importAnnotations,
 	deletePages,
 	rotatePages,
@@ -108,6 +110,7 @@ const pdf = {
 	writeAnnotations,
 	readAnnotations,
 	applyAnnotationChanges,
+	getAnnotationDigest,
 	importAnnotations,
 	deletePages,
 	rotatePages,
@@ -193,12 +196,12 @@ if (typeof self !== 'undefined') {
 		}
 		else if (message.action === 'pdf.readAnnotations') {
 			try {
-				let annotations = await readAnnotations(
+				let data = await readAnnotationState(
 					message.data.buf,
 					message.data.password,
 					fetchData
 				);
-				self.postMessage({ responseID: message.id, data: { annotations } }, []);
+				self.postMessage({ responseID: message.id, data }, []);
 			}
 			catch (e) {
 				self.postMessage({
@@ -215,13 +218,28 @@ if (typeof self !== 'undefined') {
 					message.data.password,
 					fetchData
 				);
-				self.postMessage({ responseID: message.id, data: { buf } }, [buf]);
+				let data = await readAnnotationState(
+					buf,
+					message.data.password,
+					fetchData
+				);
+				data.buf = buf;
+				self.postMessage({ responseID: message.id, data }, [buf]);
 			}
 			catch (e) {
 				self.postMessage({
 					responseID: message.id,
 					error: errObject(e)
 				}, []);
+			}
+		}
+		else if (message.action === 'pdf.getAnnotationDigest') {
+			try {
+				let digest = getAnnotationDigest(message.data.annotation);
+				self.postMessage({ responseID: message.id, data: { digest } }, []);
+			}
+			catch (e) {
+				self.postMessage({ responseID: message.id, error: errObject(e) }, []);
 			}
 		}
 		else if (message.action === 'pdf.importAnnotations') {

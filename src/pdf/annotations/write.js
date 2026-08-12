@@ -1,5 +1,6 @@
 import { applyTransform, getBoundingBox, getCenter } from './common.js';
 import { stringToAsciiOrUTF16BE } from '../../../pdf.js/src/core/core_utils.js';
+import { setBaseDigest } from './reconciliation.js';
 
 const NOTE_SIZE = 22;
 
@@ -14,6 +15,7 @@ export async function writeRawAnnotations(structure, annotations, fontEmbedder) 
 		if (!rawAnnotation) {
 			throw new Error(`Unsupported PDF annotation type '${annotation.type}'`);
 		}
+		setBaseDigest(rawAnnotation, annotation.baseDigest);
 		page['/Annots'].push(rawAnnotation);
 		if (['highlight', 'underline'].includes(annotation.type) && annotation.comment) {
 			page['/Annots'].push(addPopup(rawAnnotation));
@@ -573,6 +575,7 @@ async function annotationToRaw(annotation, fontEmbedder) {
 			'/CA': 1,
 			'/M': '(' + dateToRaw(annotation.dateModified) + ')',
 			'/T': '(' + stringToRaw(annotation.authorName) + ')',
+			'/Contents': '(' + stringToRaw(annotation.comment) + ')',
 			'/NM': '(' + 'Zotero-' + annotation.id + ')',
 			'/Zotero:Key': '(' + annotation.id + ')',
 			'/Zotero:AuthorName': '(' + stringToRaw(annotation.authorName) + ')',
@@ -604,6 +607,9 @@ async function annotationToRaw(annotation, fontEmbedder) {
 			num: 0,
 			gen: 0
 		};
+		if (!annotation.comment) {
+			delete res['/Contents'];
+		}
 
 		if (annotation.tags.length) {
 			res['/Zotero:Tags'] = '(' + stringToRaw(JSON.stringify(annotation.tags)) + ')';

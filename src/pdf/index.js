@@ -17,6 +17,15 @@ import { LocalPdfManager } from '../../pdf.js/src/core/pdf_manager.js';
 import { XRefParseException } from '../../pdf.js/src/core/core_utils.js';
 import { FontEmbedder } from './font/font-embedder.js';
 import { openRenderablePdfDocument, renderAnnotations, renderArea } from './renderer.js';
+import {
+	assertDigest,
+	getCanonicalAnnotation,
+	getAnnotationDigest,
+	normalizeTombstone,
+	readTombstones,
+	updateTombstones,
+	verifyTombstoneChanges,
+} from './annotations/reconciliation.js';
 
 import { getFullStructure } from './structure/structure.js';
 
@@ -95,8 +104,11 @@ function getRawAnnotationMatches(structure, sources) {
 		for (let rawAnnot of rawAnnots) {
 			let annotation = readRawAnnotation(rawAnnot, pageIndex, view);
 			if (!annotation) continue;
+			let id = getAnnotationID(rawAnnot);
 			let name = getString(rawAnnot['/NM']);
-			let occurrenceKey = name
+			let occurrenceKey = id
+				? `${pageIndex}:zotero:${id}`
+				: name
 				? `${pageIndex}:nm:${name}`
 				: `${pageIndex}:fingerprint:${getAnnotationFingerprint(annotation)}`;
 			let occurrence = occurrences.get(occurrenceKey) || 0;
@@ -142,6 +154,7 @@ function normalizeAndValidateAnnotation(annotation, pageCount) {
 	if (isNaN(new Date(annotation.dateModified).getTime())) {
 		throw new Error(`PDF annotation '${annotation.id}' has an invalid modification date`);
 	}
+	if (annotation.baseDigest) assertDigest(annotation.baseDigest, 'baseDigest');
 	let { position } = annotation;
 	if (!position || !Number.isInteger(position.pageIndex)
 		|| position.pageIndex < 0 || position.pageIndex >= pageCount) {
@@ -174,7 +187,7 @@ function normalizeAndValidateAnnotation(annotation, pageCount) {
 	return annotation;
 }
 
-function verifyAnnotationChanges(structure, upserts, deletions) {
+function verifyAnnotationChanges(structure, upserts, deletions, identityReplacements) {
 	let annotations = readRawAnnotations(structure, { includeSource: true });
 	for (let { annotation } of upserts) {
 		let matches = annotations.filter(value => value.id === annotation.id);
@@ -191,6 +204,53 @@ function verifyAnnotationChanges(structure, upserts, deletions) {
 			throw new Error(`Deleted PDF annotation source still matched ${matches.length} objects`);
 		}
 	}
+	for (let { id } of identityReplacements) {
+		let matches = annotations.filter(value => value.id === id);
+		if (matches.length !== 1 || matches[0].source.type !== 'zotero') {
+			throw new Error(`Replacement PDF annotation '${id}' was not written exactly once`);
+		}
+	}
+}
+
+function verifyAppliedAnnotationState(state, upserts, tombstoneChanges) {
+	for (let { annotation } of upserts) {
+		let stored = state.annotations.find(value => value.id === annotation.id);
+		if (!stored) throw new Error(`PDF annotation '${annotation.id}' is missing after write`);
+		// These values are derived from the page's text and label dictionaries,
+		// rather than serialized by the annotation writer. Verify all writable
+		// canonical fields exactly and accept the values re-derived from the PDF.
+		let expected = {
+			...annotation,
+			text: stored.text,
+			pageLabel: stored.pageLabel,
+		};
+		let expectedDigest = getAnnotationDigest(expected);
+		if (state.digests[annotation.id] !== expectedDigest) {
+			let expectedCanonical = getCanonicalAnnotation(expected);
+			let storedCanonical = getCanonicalAnnotation(stored);
+			let differentFields = Object.keys(expectedCanonical).filter(key =>
+				JSON.stringify(expectedCanonical[key]) !== JSON.stringify(storedCanonical[key])
+			);
+			throw new Error(
+				`PDF annotation '${annotation.id}' content was not written exactly`
+				+ (differentFields.length ? ` (${differentFields.join(', ')})` : '')
+			);
+		}
+		let expectedBaseDigest = annotation.baseDigest || undefined;
+		if (state.baseDigests[annotation.id] !== expectedBaseDigest) {
+			throw new Error(`PDF annotation '${annotation.id}' base digest was not written exactly`);
+		}
+	}
+	let tombstones = new Map(state.tombstones.map(value => [value.id, value]));
+	for (let value of tombstoneChanges?.upserts || []) {
+		value = normalizeTombstone(value);
+		if (JSON.stringify(tombstones.get(value.id)) !== JSON.stringify(value)) {
+			throw new Error(`Annotation tombstone '${value.id}' was not written exactly`);
+		}
+	}
+	for (let id of tombstoneChanges?.deletions || []) {
+		if (tombstones.has(id)) throw new Error(`Deleted annotation tombstone '${id}' is still present`);
+	}
 }
 
 async function applyAnnotationChanges(buf, changes, password, dataProvider) {
@@ -198,14 +258,21 @@ async function applyAnnotationChanges(buf, changes, password, dataProvider) {
 	await pdf.init(buf, password);
 	let structure = await pdf.getPDFStructure();
 	let pageCount = structure['/Root']['/Pages']['/Kids'].length;
-	let upserts = (changes?.upserts || []).map(({ annotation, source }) => ({
-		annotation: normalizeAndValidateAnnotation(annotation, pageCount),
+	let upserts = (changes?.upserts || []).map(({ annotation, source, baseDigest }) => ({
+		annotation: normalizeAndValidateAnnotation({ ...annotation, baseDigest }, pageCount),
 		source,
 	}));
 	let deletions = changes?.deletions || [];
+	let duplicateRemovals = changes?.duplicateRemovals || [];
+	let identityReplacements = changes?.identityReplacements || [];
+	let preMutationState = identityReplacements.length
+		? await readAnnotationState(buf, password, dataProvider)
+		: null;
 	let sources = [
 		...upserts.map(x => x.source).filter(Boolean),
 		...deletions,
+		...duplicateRemovals,
+		...identityReplacements.map(x => x.source),
 	];
 	let sourceMatches = getRawAnnotationMatches(structure, sources);
 
@@ -215,6 +282,44 @@ async function applyAnnotationChanges(buf, changes, password, dataProvider) {
 			throw new Error(`Annotation source matched ${matches.length} objects`);
 		}
 	}
+	for (let { source } of upserts) {
+		if (source?.type !== 'fingerprint') continue;
+		let matches = readRawAnnotations(structure, { includeSource: true }).filter(annotation =>
+			annotation.source?.type === 'fingerprint'
+			&& annotation.source.pageIndex === source.pageIndex
+			&& annotation.source.fingerprint === source.fingerprint
+		);
+		if (matches.length !== 1) {
+			throw new Error('Structural fingerprint adoption is ambiguous');
+		}
+	}
+	let allMatched = [...sourceMatches.values()].flat();
+	if (new Set(allMatched).size !== allMatched.length) {
+		throw new Error('The same PDF annotation source was targeted more than once');
+	}
+	let replacements = identityReplacements.map(replacement => {
+		if (!replacement?.source || typeof replacement.id !== 'string' || !replacement.id) {
+			throw new Error('Identity replacement requires a source and new string ID');
+		}
+		if (replacement.baseDigest) assertDigest(replacement.baseDigest, 'baseDigest');
+		let annotation = preMutationState.annotations.find(value =>
+			JSON.stringify(value.source) === JSON.stringify(replacement.source)
+		);
+		if (!annotation) throw new Error('Identity replacement source was not a supported annotation');
+		annotation = { ...annotation, id: replacement.id };
+		delete annotation.source;
+		delete annotation.transferable;
+		if (replacement.baseDigest) annotation.baseDigest = replacement.baseDigest;
+		else if (preMutationState.baseDigests[replacement.source.id]) {
+			annotation.baseDigest = preMutationState.baseDigests[replacement.source.id];
+		}
+		return { annotation: normalizeAndValidateAnnotation(annotation, pageCount) };
+	});
+	let requestedIDs = [...upserts, ...replacements].map(x => x.annotation.id);
+	if (new Set(requestedIDs).size !== requestedIDs.length) {
+		throw new Error('Annotation changes contain duplicate resulting IDs');
+	}
+	upserts.push(...replacements);
 
 	let matchedRawAnnotations = new Set(
 		[...sourceMatches.values()].flat()
@@ -231,9 +336,22 @@ async function applyAnnotationChanges(buf, changes, password, dataProvider) {
 		let fontEmbedder = new FontEmbedder({ standardFontProvider });
 		await writeRawAnnotations(structure, annotations, fontEmbedder);
 	}
-	verifyAnnotationChanges(structure, upserts, deletions);
+	updateTombstones(structure, changes?.tombstones);
+	verifyAnnotationChanges(
+		structure,
+		upserts,
+		[...deletions, ...duplicateRemovals],
+		identityReplacements
+	);
+	verifyTombstoneChanges(structure, changes?.tombstones);
 
-	return await pdf.assemblePdf('ArrayBuffer');
+	let assembled = await pdf.assemblePdf('ArrayBuffer');
+	let verifiedState = await readAnnotationState(assembled, password, dataProvider);
+	verifyAppliedAnnotationState(verifiedState, upserts, changes?.tombstones);
+	let verifiedPDF = new PDFAssembler();
+	await verifiedPDF.init(assembled, password);
+	verifyTombstoneChanges(await verifiedPDF.getPDFStructure(), changes?.tombstones);
+	return assembled;
 }
 
 function getKey(annotation) {
@@ -451,6 +569,10 @@ async function importAnnotations(
 }
 
 async function readAnnotations(buf, password, dataProvider) {
+	return (await readAnnotationState(buf, password, dataProvider)).annotations;
+}
+
+async function readAnnotationState(buf, password, dataProvider) {
 	let { imported } = await importAnnotations(
 		buf,
 		[],
@@ -459,7 +581,27 @@ async function readAnnotations(buf, password, dataProvider) {
 		dataProvider,
 		{ includeSource: true, deduplicateAnnotations: false }
 	);
-	return imported;
+	let digests = {};
+	let baseDigests = {};
+	let sources = [];
+	for (let annotation of imported) {
+		sources.push(annotation.source || null);
+		if (annotation.id) {
+			digests[annotation.id] = getAnnotationDigest(annotation);
+			if (annotation.baseDigest) baseDigests[annotation.id] = annotation.baseDigest;
+		}
+		delete annotation.baseDigest;
+	}
+	let pdf = new PDFAssembler();
+	await pdf.init(buf, password);
+	let structure = await pdf.getPDFStructure();
+	return {
+		annotations: imported,
+		sources,
+		digests,
+		baseDigests,
+		tombstones: readTombstones(structure),
+	};
 }
 
 function replaceReferences(node, refs, ref, visitedNodes = new Set()) {
@@ -1130,7 +1272,9 @@ async function importMendeleyAnnotations(buf, mendeleyAnnotations, password, dat
 export {
 	writeAnnotations,
 	readAnnotations,
+	readAnnotationState,
 	applyAnnotationChanges,
+	getAnnotationDigest,
 	importAnnotations,
 	deletePages,
 	rotatePages,
