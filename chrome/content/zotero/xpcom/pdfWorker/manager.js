@@ -26,6 +26,12 @@
 const WORKER_URL = 'resource://zotero/document-worker/worker.js';
 const ASSETS_URL = 'resource://zotero/document-worker/';
 const READER_PDF_ASSETS_URL = 'resource://zotero/reader/pdf/web/';
+const ANNOTATION_STORAGE_MODES = Object.freeze({
+	STANDARD: 'standard',
+	PDF_ONLY: 'pdf-only',
+	PDF_AND_ZOTERO: 'pdf-and-zotero',
+});
+const ANNOTATION_STORAGE_MODE_VALUES = Object.freeze(Object.values(ANNOTATION_STORAGE_MODES));
 
 function getAssetURL(path) {
 	if (path.startsWith('cmaps/') || path.startsWith('standard_fonts/')) {
@@ -199,9 +205,25 @@ class PDFWorker {
 		}
 	}
 
-	async canUseFileAnnotations(item) {
-		if (!Zotero.Prefs.get('reader.annotations.saveToFile')
-			|| !item?.isPDFAttachment()
+	get ANNOTATION_STORAGE_MODES() {
+		return ANNOTATION_STORAGE_MODES;
+	}
+
+	get ANNOTATION_STORAGE_MODE_VALUES() {
+		return ANNOTATION_STORAGE_MODE_VALUES;
+	}
+
+	getConfiguredAnnotationStorageMode() {
+		let mode = Zotero.Prefs.get('reader.annotations.storageMode');
+		if (!ANNOTATION_STORAGE_MODE_VALUES.includes(mode)) {
+			Zotero.logError(new Error(`Invalid annotation storage mode '${mode}'`));
+			return ANNOTATION_STORAGE_MODES.STANDARD;
+		}
+		return mode;
+	}
+
+	async canWriteAnnotationsToFile(item) {
+		if (!item?.isPDFAttachment()
 			|| item.library.libraryType !== 'user'
 			|| !item.library.editable
 			|| !item.library.filesEditable
@@ -221,6 +243,22 @@ class PDFWorker {
 			Zotero.logError(e);
 			return false;
 		}
+	}
+
+	async getEffectiveAnnotationStorageMode(item) {
+		let mode = this.getConfiguredAnnotationStorageMode();
+		if (mode === ANNOTATION_STORAGE_MODES.STANDARD) {
+			return mode;
+		}
+		return await this.canWriteAnnotationsToFile(item)
+			? mode
+			: ANNOTATION_STORAGE_MODES.STANDARD;
+	}
+
+	// Compatibility for callers that have not yet switched to the mode API.
+	async canUseFileAnnotations(item) {
+		return await this.getEffectiveAnnotationStorageMode(item)
+			!== ANNOTATION_STORAGE_MODES.STANDARD;
 	}
 
 	async _getFileToken(path) {
@@ -313,7 +351,7 @@ class PDFWorker {
 				throw error;
 			}
 			try {
-				var { annotations } = await this._query('pdf.readAnnotations', {
+				var workerResult = await this._query('pdf.readAnnotations', {
 					buf, password
 				}, [buf]);
 			}
@@ -321,12 +359,34 @@ class PDFWorker {
 				this._throwWorkerError('pdf.readAnnotations', e);
 			}
 
-			for (let annotation of annotations) {
+			let { annotations, sources: sourceList = [], digests = {}, baseDigests = {},
+				tombstones = [] } = workerResult;
+			let sources = {};
+			for (let [index, annotation] of annotations.entries()) {
 				annotation.tags = (annotation.tags || []).map(name => ({ name }));
+				let source = sourceList[index] || annotation.source;
+				if (source) annotation.source = source;
+				if (annotation.id && source) sources[annotation.id] = source;
 			}
 			let state = this._registerFileAnnotationRead(itemID, fileToken);
-			return { annotations, fileToken, fileRevision: state.fileRevision };
+			return {
+				annotations, sources, digests, baseDigests, tombstones,
+				fileToken, fileRevision: state.fileRevision
+			};
 		}, isPriority);
+	}
+
+	async getAnnotationDigest(annotation) {
+		return this._enqueue(async () => {
+			let workerAnnotation = {
+				...annotation,
+				tags: (annotation.tags || []).map(tag => tag.name || tag)
+			};
+			let { digest } = await this._query('pdf.getAnnotationDigest', {
+				annotation: workerAnnotation
+			});
+			return digest;
+		}, true);
 	}
 
 	/**
@@ -339,7 +399,7 @@ class PDFWorker {
 			if (!attachment.isPDFAttachment()) {
 				throw new Error('Item must be a PDF attachment');
 			}
-			if (!(await this.canUseFileAnnotations(attachment))) {
+			if (!(await this.canWriteAnnotationsToFile(attachment))) {
 				throw new Error('PDF is not eligible for file-backed annotations');
 			}
 			let path = await attachment.getFilePathAsync();
@@ -357,14 +417,18 @@ class PDFWorker {
 			}
 
 			let workerChanges = {
-				upserts: (changes.upserts || []).map(({ annotation, source }) => ({
+				upserts: (changes.upserts || []).map(({ annotation, source, baseDigest }) => ({
 					annotation: {
 						...annotation,
 						tags: (annotation.tags || []).map(tag => tag.name || tag)
 					},
-					source
+					source,
+					baseDigest
 				})),
-				deletions: changes.deletions || []
+				deletions: changes.deletions || [],
+				duplicateRemovals: changes.duplicateRemovals || [],
+				identityReplacements: changes.identityReplacements || [],
+				tombstones: changes.tombstones || { upserts: [], deletions: [] }
 			};
 			for (let { annotation } of workerChanges.upserts) {
 				delete annotation.image;
@@ -394,7 +458,7 @@ class PDFWorker {
 			let buf = await IOUtils.read(path);
 			buf = new Uint8Array(buf).buffer;
 			try {
-				var { buf: modifiedBuf } = await this._query('pdf.applyAnnotationChanges', {
+				var workerResult = await this._query('pdf.applyAnnotationChanges', {
 					buf, changes: workerChanges, password
 				}, [buf]);
 			}
@@ -402,6 +466,7 @@ class PDFWorker {
 				this._throwWorkerError('pdf.applyAnnotationChanges', e, changeSummary);
 			}
 
+			let { buf: modifiedBuf } = workerResult;
 			let currentToken = await this._getFileToken(path);
 			if (!this._fileTokensEqual(initialToken, currentToken)) {
 				throw this._newFileChangedError('PDF file changed while annotations were being saved');
@@ -429,15 +494,23 @@ class PDFWorker {
 				`Completed file-backed annotation operation ${operationID} for item ${itemID}: `
 				+ JSON.stringify({ fileRevision: state.fileRevision, fileToken })
 			);
+			let annotations = workerResult.annotations || [];
+			let sourceList = workerResult.sources || [];
+			let sources = {};
+			for (let [index, annotation] of annotations.entries()) {
+				annotation.tags = (annotation.tags || []).map(name => ({ name }));
+				let source = sourceList[index] || annotation.source;
+				if (source) annotation.source = source;
+				if (annotation.id && source) sources[annotation.id] = source;
+			}
 			return {
+				annotations,
+				digests: workerResult.digests || {},
+				baseDigests: workerResult.baseDigests || {},
+				tombstones: workerResult.tombstones || [],
 				fileToken,
 				fileRevision: state.fileRevision,
-				sources: Object.fromEntries(
-					workerChanges.upserts.map(({ annotation }) => [
-						annotation.id,
-						{ type: 'zotero', id: annotation.id }
-					])
-				)
+				sources
 			};
 		}, isPriority);
 	}
@@ -858,6 +931,11 @@ class PDFWorker {
 				this._throwWorkerError('pdf.deletePages', e);
 			}
 
+			// Commit the PDF before changing Zotero annotation items. If the file
+			// write fails, synced Zotero state must continue to describe the PDF
+			// that is still on disk.
+			await IOUtils.write(path, new Uint8Array(modifiedBuf));
+
 			// Delete annotations from deleted pages
 			let ids = [];
 			for (let i = annotations.length - 1; i >= 0; i--) {
@@ -903,7 +981,6 @@ class PDFWorker {
 			await Zotero.Items.updateSynced(ids, false);
 			await Zotero.Notifier.trigger('modify', 'item', ids, {});
 
-			await IOUtils.write(path, new Uint8Array(modifiedBuf));
 			let mtime = Math.floor((await attachment.attachmentModificationTime) / 1000);
 			attachment.attachmentLastProcessedModificationTime = mtime;
 			await attachment.saveTx({

@@ -46,7 +46,7 @@ Zotero.Prefs = new function () {
 
 		// Process pref version updates
 		var fromVersion = this.get('prefVersion');
-		var toVersion = 22;
+		var toVersion = 23;
 		if (!fromVersion) {
 			this.set('prefVersion', toVersion);
 		}
@@ -235,6 +235,35 @@ Zotero.Prefs = new function () {
 							this.clear('downloadPDFViaBrowser.downloadTimeout');
 						}
 						break;
+
+					case 23: {
+						const storageModePref = 'reader.annotations.storageMode';
+						const legacyPref = 'reader.annotations.saveToFile';
+						const validModes = ['standard', 'pdf-only', 'pdf-and-zotero'];
+						let storageMode = this.prefHasUserValue(storageModePref)
+							? this.get(storageModePref)
+							: this.prefHasUserValue(legacyPref) && !this.get(legacyPref)
+								? 'standard'
+								: 'pdf-only';
+
+						// A profile that ran the old build normally has no user value for
+						// saveToFile, because that build shipped with a default of true.
+						// Treat an invalid prerelease value like an unset new preference and
+						// recover from the legacy setting using the same rule.
+						if (!validModes.includes(storageMode)) {
+							storageMode = this.prefHasUserValue(legacyPref) && !this.get(legacyPref)
+								? 'standard'
+								: 'pdf-only';
+						}
+						this.set(storageModePref, storageMode);
+						if (!validModes.includes(this.get(storageModePref))) {
+							throw new Error(`Invalid annotation storage mode '${this.get(storageModePref)}'`);
+						}
+						if (this.prefHasUserValue(legacyPref)) {
+							this.clear(legacyPref);
+						}
+						break;
+					}
 				}
 			}
 			this.set('prefVersion', toVersion);
