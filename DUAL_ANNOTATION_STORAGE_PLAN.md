@@ -168,3 +168,32 @@ Keep reconciliation tests in a dedicated file so parallel branches do not repeat
   Leaving database-backed storage deliberately starts a fresh PDF-only identity
   generation so a synchronized Zotero deletion is never resurrected.
 - Group libraries and unsupported attachment types retain stock Zotero behavior.
+
+## Provider-Neutral Linked Cloud Storage Extension
+
+Extend the build with a mounted-folder attachment manager rather than a Box API.
+Box Drive is the first tested provider profile, while Dropbox, Google Drive, and
+generic synchronized folders use the same relative-linked-file implementation.
+
+- Use the existing linked attachment base directory as the local cloud root.
+- Migrate stored PDFs whose parent is a personal-library journal article. Put
+  the article PDF and all SI PDFs in one stable folder named from a sanitized
+  American Chemical Society bibliography entry.
+- Detect both existing and newly created stored PDFs with a startup scan and
+  Zotero notifications. If the root is unavailable, leave the stored attachment
+  intact and retry later.
+- Make conversion resumable and verification-first: copy atomically, compare
+  size and SHA-256, create a fresh relative linked attachment, transfer child
+  annotations, relations, and full-text state, verify the new link, then erase
+  the old stored attachment.
+- Keep ordinary Zotero Trash reversible. Move managed files to macOS Trash only
+  after confirmed permanent interactive deletion; retain noninteractive deletes
+  as reviewable orphan files.
+- Support one migration-owner client at a time in v1. A detected race retains
+  both results and reports a conflict.
+
+Implement automatic-download controls separately on
+`feature/automatic-attachment-downloads` and submit them as an unmerged PR. The
+seven default-enabled device-local controls are PDF, DOCX, MD, XLSX, MP3, MP4,
+and WEBM. They filter automatic translator/OA and ordinary background storage
+downloads, while explicit and forced downloads remain available.
