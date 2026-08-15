@@ -70,6 +70,8 @@ const xpcomFilesLocal = [
 	'annotations',
 	'api',
 	'attachments',
+	'linkedFolderProviders',
+	'linkedFolderAttachmentManager',
 	'attachmentReadObserver',
 	'browserRequest',
 	'cite',

@@ -66,6 +66,35 @@
 	margin-top: 4px;
 }
 
+.linked-folder-separator {
+	margin-block: 12px 8px;
+}
+
+#linked-folder-attachments-description,
+#linked-folder-attachments-controls {
+	margin-inline-start: 24px;
+}
+
+#linked-folder-attachments-controls {
+	gap: 6px;
+}
+
+.linked-folder-provider-row {
+	gap: 6px;
+}
+
+#linked-folder-root-status[data-state="success"] {
+	color: var(--accent-green);
+}
+
+#linked-folder-root-status[data-state="error"] {
+	color: var(--accent-red);
+}
+
+#linked-folder-migration-progressmeter {
+	width: 100%;
+}
+
 #zotero-prefpane-advanced-open-buttons {
 	display: block;
 	text-align: end;

@@ -136,7 +136,7 @@ describe("Advanced Preferences", function () {
 				await setBaseDirectory(basePath);
 				assert.equal(Zotero.Prefs.get('baseAttachmentPath'), basePath);
 				assert.isTrue(Zotero.Prefs.get('saveRelativeAttachmentPath'));
-			})
+			});
 			
 			it("should clear base directory", async function () {
 				var basePath = getTestDataDirectory().path;
@@ -145,7 +145,7 @@ describe("Advanced Preferences", function () {
 				
 				assert.equal(Zotero.Prefs.get('baseAttachmentPath'), '');
 				assert.isFalse(Zotero.Prefs.get('saveRelativeAttachmentPath'));
-			})
+			});
 			
 			it("should change absolute path of linked attachment under new base dir to prefixed path", async function () {
 				var file = getTestDataDirectory();
@@ -160,7 +160,7 @@ describe("Advanced Preferences", function () {
 					attachment.attachmentPath,
 					Zotero.Attachments.BASE_PATH_PLACEHOLDER + 'test.png'
 				);
-			})
+			});
 			
 			it("should change prefixed path to absolute when changing base directory", async function () {
 				var basePath = getTestDataDirectory().path;
@@ -179,7 +179,7 @@ describe("Advanced Preferences", function () {
 				await setBaseDirectory(otherPath);
 				
 				assert.equal(attachment.attachmentPath, file.path);
-			})
+			});
 			
 			it("should change prefixed path to absolute when clearing base directory", async function () {
 				var basePath = getTestDataDirectory().path;
@@ -246,6 +246,114 @@ describe("Advanced Preferences", function () {
 					Zotero.Attachments.BASE_PATH_PLACEHOLDER + '/test.pdf'
 				);
 			});
-		})
-	})
-})
+			});
+
+		describe("Linked Cloud Folder", function () {
+			const ENABLED_PREF = 'linkedFolderAttachments.enabled';
+			const PROVIDER_PREF = 'linkedFolderAttachments.provider';
+			let win;
+			let originalManager;
+
+			async function loadAdvancedPreferences() {
+				win = await loadWindow("chrome://zotero/content/preferences/preferences.xhtml", {
+					pane: 'zotero-prefpane-advanced'
+				});
+				await win.Zotero_Preferences.waitForFirstPaneLoad();
+				return win.Zotero_Preferences.Linked_Folder;
+			}
+
+			beforeEach(function () {
+				originalManager = Zotero.LinkedFolderAttachmentManager;
+				Zotero.Prefs.set(ENABLED_PREF, false);
+				Zotero.Prefs.set(PROVIDER_PREF, 'box-drive');
+				Zotero.Prefs.set('baseAttachmentPath', '');
+			});
+
+			afterEach(function () {
+				sinon.restore();
+				Zotero.LinkedFolderAttachmentManager = originalManager;
+				Zotero.Prefs.clear(ENABLED_PREF);
+				Zotero.Prefs.clear(PROVIDER_PREF);
+				Zotero.Prefs.clear('baseAttachmentPath');
+				if (win && !win.closed) {
+					win.close();
+				}
+				win = null;
+			});
+
+			it("should expose accessible provider-neutral controls and fail closed without a manager", async function () {
+				Zotero.LinkedFolderAttachmentManager = undefined;
+				await loadAdvancedPreferences();
+
+				let doc = win.document;
+				let enabled = doc.getElementById('linked-folder-attachments-enabled');
+				let provider = doc.getElementById('linked-folder-provider');
+				let providerValues = [...provider.querySelectorAll('menuitem')]
+					.map(item => item.value);
+
+				assert.isFalse(enabled.checked);
+				assert.deepEqual(providerValues, [
+					'box-drive', 'dropbox', 'google-drive', 'local-folder'
+				]);
+				assert.equal(provider.getAttribute('aria-describedby'),
+					'linked-folder-availability-guidance');
+				assert.equal(doc.getElementById('linked-folder-root-status').getAttribute('role'),
+					'status');
+				assert.isTrue(doc.getElementById('linked-folder-preview-migration').disabled);
+				assert.isTrue(doc.getElementById('linked-folder-start-migration').disabled);
+				assert.isTrue(doc.getElementById('linked-folder-pause-migration').disabled);
+			});
+
+			it("should validate the shared root and invoke migration controls", async function () {
+				let rootPath = await getTempDirectory();
+				let manager = {
+					init: sinon.stub().resolves(),
+					previewMigration: sinon.stub().resolves({ count: 4, bytes: 1024 }),
+					queueLibraryMigration: sinon.stub().resolves(),
+					getMigrationStatus: sinon.stub().resolves({
+						total: 5,
+						complete: 2,
+						waiting: 1,
+						active: 1,
+						failed: 1,
+						deferred: 0,
+						paused: false
+					}),
+					pause: sinon.stub().resolves(),
+					resume: sinon.stub().resolves(),
+					retryFailed: sinon.stub().resolves(),
+				};
+				Zotero.LinkedFolderAttachmentManager = manager;
+				Zotero.Prefs.set(ENABLED_PREF, true);
+				Zotero.Prefs.set('baseAttachmentPath', rootPath);
+				let linkedFolder = await loadAdvancedPreferences();
+				let doc = win.document;
+
+				await waitForCallback(
+					() => !doc.getElementById('linked-folder-preview-migration').disabled,
+					20,
+					10
+				);
+				assert.equal(doc.getElementById('linked-folder-root-status').dataset.state, 'success');
+				assert.isFalse(doc.getElementById('linked-folder-start-migration').disabled);
+
+				await linkedFolder.previewMigration();
+				assert.isFalse(doc.getElementById('linked-folder-preview-summary').hidden);
+				await linkedFolder.startMigration();
+				assert.isTrue(doc.getElementById('linked-folder-preview-summary').hidden);
+				await linkedFolder.pauseMigration();
+				await linkedFolder.resumeMigration();
+				await linkedFolder.retryMigration();
+
+				let libraryID = Zotero.Libraries.userLibraryID;
+				assert.isTrue(manager.previewMigration.calledOnceWithExactly(libraryID));
+				assert.isTrue(manager.queueLibraryMigration.calledOnceWithExactly(libraryID));
+				assert.isTrue(manager.pause.calledOnceWithExactly(libraryID));
+				assert.isTrue(manager.resume.calledOnceWithExactly(libraryID));
+				assert.isTrue(manager.retryFailed.calledOnceWithExactly(libraryID));
+				assert.equal(doc.getElementById('linked-folder-migration-progressmeter').value, 60);
+				assert.isFalse(doc.getElementById('linked-folder-retry-migration').disabled);
+			});
+		});
+	});
+});

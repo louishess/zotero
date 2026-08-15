@@ -8,6 +8,8 @@ pref("extensions.zotero.undoHistory.steps", 100);
 
 pref("extensions.zotero.saveRelativeAttachmentPath", false);
 pref("extensions.zotero.baseAttachmentPath", "");
+pref("extensions.zotero.linkedFolderAttachments.enabled", false);
+pref("extensions.zotero.linkedFolderAttachments.provider", "box-drive");
 pref("extensions.zotero.useDataDir", false);
 pref("extensions.zotero.dataDir", "");
 pref("extensions.zotero.warnOnUnsafeDataDir", true);
