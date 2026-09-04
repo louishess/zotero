@@ -219,7 +219,7 @@ pref("extensions.zotero.fallbackLauncher.unix", "/usr/bin/xdg-open");
 pref("extensions.zotero.fallbackLauncher.windows", "");
 
 //Translators
-pref("extensions.zotero.translators.attachSupplementary", false);
+pref("extensions.zotero.translators.attachSupplementary", true);
 pref("extensions.zotero.translators.supplementaryAsLink", false);
 pref("extensions.zotero.translators.RIS.import.ignoreUnknown", true);
 pref("extensions.zotero.translators.RIS.import.keepID", false);
