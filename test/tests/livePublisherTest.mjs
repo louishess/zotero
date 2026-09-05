@@ -261,7 +261,7 @@ function assertPublisherFix(testCase, result) {
 	if (testCase.publisher === 'ACS') {
 		assert.equal(result.translators[0]?.label, 'ACS Publications');
 		assert.lengthOf(result.items, 1);
-		assert.equal(result.items[0].DOI, testCase.expectedDOI);
+		assertDOIEqual(result.items[0].DOI, testCase.expectedDOI);
 		let supplements = result.items[0].attachments.filter(attachment =>
 			attachment.url?.includes('/article-supplement/')
 				|| attachment.url?.includes('ndownloader.figshare.com/files/'));
@@ -272,7 +272,7 @@ function assertPublisherFix(testCase, result) {
 	}
 	else if (testCase.publisher === 'Nature') {
 		assert.lengthOf(result.items, 1);
-		assert.equal(result.items[0].DOI, '10.1038/s41586-026-10843-7');
+		assertDOIEqual(result.items[0].DOI, '10.1038/s41586-026-10843-7');
 		let supplements = result.items[0].attachments.filter(attachment =>
 			attachment.url?.includes('media.springernature.com/original/'));
 		assert.lengthOf(supplements, 21);
@@ -286,7 +286,7 @@ function assertPublisherFix(testCase, result) {
 	}
 	else if (testCase.publisher === 'Cell Press') {
 		assert.lengthOf(result.items, 1);
-		assert.equal(result.items[0].DOI, testCase.expectedDOI);
+		assertDOIEqual(result.items[0].DOI, testCase.expectedDOI);
 		let supplements = result.items[0].attachments.filter(attachment =>
 			attachment.url?.includes('/attachment/')
 				|| attachment.url?.includes('ars.els-cdn.com/content/image/'));
@@ -298,7 +298,7 @@ function assertPublisherFix(testCase, result) {
 	}
 	else if (testCase.publisher === 'RSC') {
 		assert.lengthOf(result.items, 1);
-		assert.equal(result.items[0].DOI, testCase.expectedDOI);
+		assertDOIEqual(result.items[0].DOI, testCase.expectedDOI);
 		assert.isTrue(result.items[0].attachments.some(attachment =>
 			attachment.url?.includes('/article-pdf/doi/')),
 		'main RSC PDF descriptor was preserved');
@@ -312,7 +312,7 @@ function assertPublisherFix(testCase, result) {
 	}
 	else if (testCase.publisher.startsWith('Science')) {
 		assert.lengthOf(result.items, 1);
-		assert.equal(result.items[0].DOI, testCase.expectedDOI);
+		assertDOIEqual(result.items[0].DOI, testCase.expectedDOI);
 		assert.isTrue(result.items[0].attachments.some(attachment =>
 			attachment.url?.includes('/doi/pdf/')),
 		'main Science PDF descriptor was preserved');
@@ -331,7 +331,7 @@ function assertPublisherFix(testCase, result) {
 	}
 	else if (testCase.publisher.startsWith('Wiley')) {
 		assert.lengthOf(result.items, 1);
-		assert.equal(result.items[0].DOI, testCase.expectedDOI);
+		assertDOIEqual(result.items[0].DOI, testCase.expectedDOI);
 		assert.isTrue(result.items[0].attachments.some(attachment =>
 			attachment.url?.includes('/doi/pdfdirect/')),
 		'main Wiley PDF descriptor was preserved');
@@ -350,16 +350,28 @@ function assertPublisherFix(testCase, result) {
 	}
 }
 
+function assertDOIEqual(actual, expected) {
+	let normalize = doi => typeof doi === 'string' ? doi.trim().toLowerCase() : doi;
+	assert.equal(normalize(actual), normalize(expected));
+}
+
 function assertLibraryTransfer(testCase, result) {
 	let calls = result.libraryTransferCalls || [];
 	assert.lengthOf(calls.filter(call => call.method === 'saveItems' && call.success), 1);
 	let savedAttachments = calls.filter(call => call.method === 'saveAttachment' && call.success)
 		.map(call => call.attachment);
 	if (requirePrimaryPDF) {
-		assert.lengthOf(savedAttachments.filter(attachment =>
+		let primaryDescriptorURLs = new Set((result.items || [])
+			.flatMap(item => item.attachments || [])
+			.filter(attachment => attachment.title === 'Full Text PDF'
+				&& attachment.mimeType === 'application/pdf')
+			.map(attachment => normalizeAttachmentURL(attachment.url))
+			.filter(Boolean));
+		let primaryPDFs = savedAttachments.filter(attachment =>
 			attachment.contentType === 'application/pdf'
-				&& !attachment.url.includes('ndownloader.figshare.com/files/')),
-		1, 'primary article PDF was transferred');
+				&& isPrimaryPDFURL(testCase, attachment.url)
+				&& primaryDescriptorURLs.has(normalizeAttachmentURL(attachment.url)));
+		assert.lengthOf(primaryPDFs, 1, 'primary article PDF was transferred');
 	}
 	if (testCase.publisher === 'ACS') {
 		assert.lengthOf(savedAttachments.filter(attachment =>
@@ -393,6 +405,97 @@ function assertLibraryTransfer(testCase, result) {
 		testCase.expectedSupplementCount);
 	}
 }
+
+function normalizeAttachmentURL(url) {
+	if (typeof url !== 'string' || !url) return null;
+	try {
+		let normalized = new URL(url);
+		normalized.hash = '';
+		return normalized.href;
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function isPrimaryPDFURL(testCase, url) {
+	url = normalizeAttachmentURL(url);
+	if (!url) return false;
+	if (testCase.publisher === 'ACS') {
+		return /^https?:\/\/pubs\.acs\.org\/doi\/pdf\/[^?#]+(?:\?[^#]*)?$/i.test(url);
+	}
+	if (testCase.publisher === 'Nature') {
+		return /^https?:\/\/(?:www\.)?nature\.com\/articles\/[^/?#]+\.pdf(?:\?[^#]*)?$/i.test(url);
+	}
+	if (testCase.publisher === 'Cell Press') {
+		return /^https?:\/\/(?:www\.)?cell\.com\/[^?#]*\/pdf(?:\/[^?#]*)?(?:\?[^#]*)?$/i.test(url);
+	}
+	if (testCase.publisher === 'RSC') {
+		return /^https?:\/\/[^/?#]+\/[^?#]*\/article-pdf\/doi\//i.test(url);
+	}
+	if (testCase.publisher.startsWith('Science')) {
+		return /^https?:\/\/[^/?#]+\/doi\/pdf\/[^?#]+(?:\?[^#]*)?$/i.test(url);
+	}
+	if (testCase.publisher.startsWith('Wiley')) {
+		return /^https?:\/\/[^/?#]+\/doi\/pdfdirect\/[^?#]+(?:\?[^#]*)?$/i.test(url);
+	}
+	return false;
+}
+
+describe('Live publisher transfer URL classification', function () {
+	it('distinguishes main PDFs from publisher supplementary routes', function () {
+		let cases = [
+			{
+				publisher: 'ACS',
+				primary: 'https://pubs.acs.org/doi/pdf/10.1021/example',
+				supplement: 'https://pubs.acs.org/article-supplement/example/file.pdf',
+			},
+			{
+				publisher: 'Nature',
+				primary: 'https://www.nature.com/articles/example.pdf',
+				supplement: 'https://media.springernature.com/original/example.pdf',
+			},
+			{
+				publisher: 'Cell Press',
+				primary: 'https://www.cell.com/cell/pdf/example.pdf?download=true',
+				supplement: 'https://ars.els-cdn.com/content/image/example.pdf',
+			},
+			{
+				publisher: 'RSC',
+				primary: 'https://pubs.rsc.org/en/content/article-pdf/doi/example',
+				supplement: 'https://pubs.rsc.org/en/content/article-supplement/doi/example/file.mp4',
+			},
+			{
+				publisher: 'Science SI control',
+				primary: 'https://www.science.org/doi/pdf/example',
+				supplement: 'https://www.science.org/doi/suppl/example/file.pdf',
+			},
+			{
+				publisher: 'Wiley SI control',
+				primary: 'https://onlinelibrary.wiley.com/doi/pdfdirect/example',
+				supplement: 'https://onlinelibrary.wiley.com/action/downloadSupplement?file=example.pdf',
+			},
+		];
+		for (let testCase of cases) {
+			assert.isTrue(isPrimaryPDFURL(testCase, testCase.primary), testCase.publisher);
+			assert.isFalse(isPrimaryPDFURL(testCase, testCase.supplement), testCase.publisher);
+		}
+		assert.isFalse(isPrimaryPDFURL({ publisher: 'Nature' }, ''), 'Nature empty URL');
+		assert.isFalse(isPrimaryPDFURL(
+			{ publisher: 'Nature' },
+			'https://example.invalid/article.pdf'
+		), 'Nature unrelated URL');
+		assert.isFalse(isPrimaryPDFURL({ publisher: 'Cell Press' }, ''), 'Cell empty URL');
+		assert.isFalse(isPrimaryPDFURL(
+			{ publisher: 'Cell Press' },
+			'https://ars.els-cdn.com/content/image/example.pdf'
+		), 'Cell supplementary URL');
+	});
+
+	it('accepts DOI values with different case', function () {
+		assertDOIEqual('10.1039/d6ma00514d', '10.1039/D6MA00514D');
+	});
+});
 
 runLive('Live publisher translator diagnostics', function () {
 	this.timeout(120000);
