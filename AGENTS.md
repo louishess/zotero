@@ -43,7 +43,7 @@ Subagent handoff: changed files, interface changes, tests actually run and resul
 3. Cloud migration safety and restart tests across every durable phase, path/root mutations, missing files, reader races, disk/permission failure and organizer conflicts.
 4. All annotation types and six transitions, closed-reader and multi-attachment changes, two readers, file/data delivery order, deleted-key protection and conversion state transfer.
 5. Accessible settings and actionable configuration, waiting, conflict, handover, deletion and orphan recovery.
-6. Current authenticated main-PDF/SI byte transfers for Nature, Cell, ACS, RSC, Science and Wiley, in disposable libraries.
+6. Current main-PDF/SI byte transfers for Nature, Cell, ACS, RSC, Science and Wiley, using open-access controls in disposable libraries; authentication only if access actually requires it.
 7. Real two-Mac tests for **each of Box Drive, Dropbox and Google Drive**, including different base paths, offline edits, placeholders, cloud conflict copies, organizer handover and restart. Simulators do not satisfy this gate. Missing accounts/devices remain pending, never passed.
 8. Pinned production macOS build, ad-hoc signing verification, matching Connector package, checksums, release manifest and recovery instructions. No completion claim until every required gate has evidence.
 
@@ -60,6 +60,19 @@ Subagent handoff: changed files, interface changes, tests actually run and resul
 - User confirmed no second Mac is currently available; Dropbox and Google Drive folders are not yet configured. These real-provider/two-Mac gates remain pending. Do not substitute simulations for them or mark the full goal complete.
 - Current unauthenticated publisher discovery: Nature passed with a main PDF and 21 SI descriptors; ACS, Cell, RSC, Science and Wiley returned browser-verification pages. These are access-blocked diagnostics, not evidence of broken translators or successful file transfers. Evidence: `combined-review/zoteromerge-live-publisher-discovery.log` and its compact summary JSON.
 - User clarified to use open-access controls; no publisher sign-in is assumed necessary. A separate visible Chrome for Testing session and disposable Zotero library are prepared under `/private/tmp/zoteromerge-live-acceptance/`. Test Connector `connector.url` must remain `http://127.0.0.1:23129/`; the existing personal Zotero listens on port 23119 and must never receive test saves. Verify the test process has the disposable database open before enabling live transfers. Browser endpoint state and local harness adaptations stay outside source/artifact packages. Do not log credentials or copy the browser profile into evidence.
+
+### Current live transfer audit (2026-09-05)
+
+Evidence: `combined-review/zoteromerge-live-library-audit.json` maps each disposable parent DOI to its saved attachments, source URLs, file hashes and format checks. The test Desktop was stopped before SQLite inspection; database integrity is `ok`. The personal library was untouched.
+
+- Nature: complete current transfer control, one parent with 22 valid imported files: main PDF + 3 SI PDFs + 18 XLSX. All spreadsheet archives validate. This is file-transfer evidence, not a live cloud/annotation acceptance claim.
+- ACS: one valid Figshare SI PDF saved; main PDF request returned HTTP 403 HTML. Incomplete.
+- Cell (Heliyon open-access control): one valid CDN SI PDF saved; main PDF request returned HTTP 403 HTML. Incomplete. The PubMed URL-only child is not a transferred file.
+- RSC: parent and three MP4 descriptors found; no file transferred. A normal SI request returned HTTP 403 HTML. DOI casing changed to lowercase and is semantically unchanged.
+- Science: article and two SI links visible, but citation-export POST returned HTTP 403 before item creation. No transfer.
+- Wiley: official full/abstract publisher pages identify the control as Free Access, but the local browser still shows a verification page. No transfer.
+- Connector test-only follow-up commit `e94f0ff` prevents SI PDFs from counting as the primary PDF and compares DOI values case-insensitively. Two focused tests pass (`zoteromerge-live-harness-regression.log`). The packaged Connector runtime remains built from `c85b868`; these later changes affect tests only. Earlier ACS/Cell harness passes without the required-primary flag do not satisfy the gate.
+- HTTP access evidence is in `zoteromerge-live-attachment-http-summary.json` and `zoteromerge-live-science-http-summary.txt`. Do not infer a translator defect or bypass publisher verification from HTTP 403. The separate browser remains available for normal manual access checks; relaunch only the disposable Desktop/profile before resuming saves.
 
 ### Open review findings (update as resolved)
 
@@ -204,11 +217,11 @@ Staged checks verified both preference defaults, the preference server bridge, c
 - For annotation conflicts, compare the PDF and Zotero versions in the conflict dialog. Cancel preserves the conflicting content and leaves the reader read-only. Reopen after resolving the underlying condition. Background checks never choose a conflict winner.
 - Ordinary Zotero Trash retains cloud bytes. Permanent item deletion asks separately whether to move managed files to macOS Trash. Changed or unavailable files are retained for orphan review. Restore files from macOS Trash to their original relative path when undoing that file removal; restoring a permanently deleted Zotero item requires the library backup/data recovery path.
 - After an interrupted conversion, restart with the same root and organizer records. The job rechecks target bytes, metadata, children and ownership before completing. The stored source is erased only after verification; an already authorized interruption with missing source bytes resumes from the verified target. Do not manually delete the retained source, target or job records during recovery.
-- The remaining acceptance needs a second Mac and configured disposable Box, Dropbox and Google Drive folders, plus current authenticated transfers from all six SI publishers. The user has no second Mac presently and Dropbox/Google Drive are not configured. Keep those gates pending; do not migrate the personal library or declare the full goal complete.
+- The remaining acceptance needs a second Mac and configured disposable Box, Dropbox and Google Drive folders, plus current open-access main-PDF/SI transfers from all six SI publishers. The user has no second Mac presently and Dropbox/Google Drive are not configured. Keep those gates pending; do not migrate the personal library or declare the full goal complete.
 
 ## Remaining work and historical context
 
-ZoteroMerge local automated validation and review packaging are complete as recorded above. Manual acceptance remains pending for authenticated publisher transfers, cross-provider case/Unicode/long-filename portability, and independent real file/data-sync delivery between Macs. Do not report these live gates as completed. The combined tests migrated only disposable files and did not write to the personal library.
+ZoteroMerge local automated validation and review packaging are complete as recorded above. Manual acceptance remains pending for the remaining publisher transfers, cross-provider case/Unicode/long-filename portability, and independent real file/data-sync delivery between Macs. Do not report these live gates as completed. The combined tests migrated only disposable files and did not write to the personal library.
 
 Historical 2026-08-08 normal-profile tests confirmed main PDF + SI transfers for ACS, Nature, and Cell. Those are historical results, not current combined-build tests. Useful controls:
 
