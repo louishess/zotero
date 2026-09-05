@@ -42,6 +42,7 @@ const ARRAYBUFFER_MAX_LENGTH = Services.appinfo.is64Bit
 
 const READ_ALOUD_ENABLED_VOICES_PATH = PathUtils.join(Zotero.Profile.dir, 'readAloudEnabledVoices.json');
 const READ_ALOUD_VOICE_DEFAULTS_PATH = PathUtils.join(Zotero.Profile.dir, 'readAloudVoiceDefaults.json');
+const ANNOTATION_FILE_POLL_INTERVAL = 30000;
 
 // Whether the Read Aloud audio cache has been pruned of stale versions this session
 let readAloudCachePruned = false;
@@ -3202,6 +3203,12 @@ class Reader {
 		this._fileAnnotationMutationQueues = new Map();
 		this._annotationRecoveryQueues = new Map();
 		this._annotationRecoveryPromises = new Set();
+		this._annotationFilePollState = new Map();
+		this._annotationFilePollTimer = null;
+		this._annotationFilePollPromise = null;
+		this._annotationFilePollGeneration = 0;
+		this._annotationFilePollStopping = false;
+		Zotero.addShutdownListener(() => this._stopAnnotationFilePolling());
 		this.onChangeSidebarWidth = null;
 		this.onToggleSidebar = null;
 
@@ -3324,9 +3331,209 @@ class Reader {
 			() => this._annotationRecoveryPromises.delete(this._annotationStartupRecovery),
 			() => this._annotationRecoveryPromises.delete(this._annotationStartupRecovery)
 		);
+		this._startAnnotationFilePolling();
 		Zotero.Session.state.windows
 			.filter(x => x.type == 'reader' && Zotero.Items.exists(x.itemID))
 			.forEach(x => this.open(x.itemID, null, { title: x.title, openInWindow: true, secondViewState: x.secondViewState }));
+	}
+
+	/**
+	 * Start the lightweight fallback for relative linked PDFs. File and sync
+	 * notifications are preferred, but a peer may update a mounted folder
+	 * without producing a Zotero notification on this installation.
+	 */
+	_startAnnotationFilePolling() {
+		this._annotationFilePollStopping = false;
+		if (this._annotationFilePollTimer) return;
+		this._annotationFilePollTimer = setInterval(
+			() => this._runAnnotationFilePoll(),
+			ANNOTATION_FILE_POLL_INTERVAL
+		);
+	}
+
+	_stopAnnotationFilePolling() {
+		this._annotationFilePollStopping = true;
+		this._annotationFilePollGeneration++;
+		if (this._annotationFilePollTimer) {
+			clearInterval(this._annotationFilePollTimer);
+			this._annotationFilePollTimer = null;
+		}
+		this._annotationFilePollState.clear();
+		return this._annotationFilePollPromise || Promise.resolve([]);
+	}
+
+	_runAnnotationFilePoll() {
+		if (this._annotationFilePollStopping) return Promise.resolve([]);
+		if (this._annotationFilePollPromise) return this._annotationFilePollPromise;
+		let generation = this._annotationFilePollGeneration;
+		let promise = Promise.resolve()
+			.then(() => this._pollLinkedPDFAnnotations(generation))
+			.catch(error => {
+				Zotero.logError(error);
+				return [];
+			});
+		this._annotationFilePollPromise = promise;
+		let cleanup = () => {
+			if (this._annotationFilePollPromise === promise) {
+				this._annotationFilePollPromise = null;
+			}
+		};
+		promise.then(cleanup, cleanup);
+		return promise;
+	}
+
+	/**
+	 * Inspect relative linked PDFs using filesystem metadata only. The first
+	 * available snapshot is reconciled only for Dual mode, and later polls queue
+	 * work only when the path, size, or modification time changes.
+	 */
+	async _pollLinkedPDFAnnotations(generation = this._annotationFilePollGeneration) {
+		if (generation !== this._annotationFilePollGeneration || this._annotationFilePollStopping) {
+			return [];
+		}
+		let basePath = Zotero.Prefs.get('baseAttachmentPath');
+		if (!basePath) return [];
+		let placeholder = Zotero.Attachments.BASE_PATH_PLACEHOLDER;
+		let rows = await Zotero.DB.columnQueryAsync(
+			'SELECT IA.itemID FROM itemAttachments IA JOIN items I USING (itemID) '
+				+ 'WHERE I.libraryID=? AND IA.linkMode=? AND IA.path LIKE ? '
+				+ 'AND I.itemID NOT IN (SELECT itemID FROM deletedItems)',
+			[
+				Zotero.Libraries.userLibraryID,
+				Zotero.Attachments.LINK_MODE_LINKED_FILE,
+				`${placeholder}%`
+			]
+		);
+		let seen = new Set();
+		let recovery = [];
+		for (let itemID of rows) {
+			if (generation !== this._annotationFilePollGeneration || this._annotationFilePollStopping) {
+				return recovery.length ? Promise.allSettled(recovery) : [];
+			}
+			let item;
+			try {
+				item = await Zotero.Items.getAsync(itemID);
+			}
+			catch (error) {
+				Zotero.logError(error);
+				continue;
+			}
+			if (!item?.isPDFAttachment?.() || item.libraryID != Zotero.Libraries.userLibraryID) {
+				continue;
+			}
+			let relativePath = item.attachmentPath;
+			if (!relativePath?.startsWith(placeholder)) continue;
+			let path;
+			try {
+				path = Zotero.Attachments.resolveRelativePath(relativePath);
+				if (!path || !Zotero.File.directoryContains(basePath, path)) continue;
+			}
+			catch (error) {
+				// Keep an invalid or unavailable relative path out of the poller's
+				// recovery set. Normal attachment/file notifications can retry it.
+				continue;
+			}
+			seen.add(item.id);
+
+			let token = await this._getAnnotationFilePollToken(path);
+			if (generation !== this._annotationFilePollGeneration || this._annotationFilePollStopping) {
+				return recovery.length ? Promise.allSettled(recovery) : [];
+			}
+			let previous = this._annotationFilePollState.get(item.id);
+			let sameToken = previous?.key === token.key;
+			if (!token.available) {
+				this._annotationFilePollState.set(item.id, {
+					...token,
+					status: 'unavailable',
+					mode: null
+				});
+				continue;
+			}
+
+			let mode;
+			try {
+				mode = await Zotero.PDFWorker.getEffectiveAnnotationStorageMode(item);
+			}
+			catch (error) {
+				Zotero.logError(error);
+				if (generation === this._annotationFilePollGeneration && !this._annotationFilePollStopping) {
+					this._annotationFilePollState.set(item.id, {
+						...token,
+						status: 'deferred',
+						mode: null
+					});
+				}
+				continue;
+			}
+			if (generation !== this._annotationFilePollGeneration || this._annotationFilePollStopping) {
+				return recovery.length ? Promise.allSettled(recovery) : [];
+			}
+			// A deferred result may represent an unsaved reader, a transient worker
+			// failure, or pending repairs. Retry it on the next bounded poll. The
+			// conflict state below is retained until the file token changes so a
+			// background conflict cannot cause a dialog-free busy loop.
+			if (sameToken && previous?.status === 'conflict' && previous.mode === mode) continue;
+			if (sameToken && previous?.status === 'reconciled'
+				&& previous.mode === mode && mode === 'pdf-and-zotero') continue;
+			if (mode !== 'pdf-and-zotero') {
+				this._annotationFilePollState.set(item.id, {
+					...token,
+					status: 'not-applicable',
+					mode
+				});
+				continue;
+			}
+			let queued = this._queueAnnotationRecovery(item.id, 'linked-file-poll');
+			recovery.push(Promise.resolve(queued).then(result => {
+				if (generation !== this._annotationFilePollGeneration || this._annotationFilePollStopping) {
+					return result;
+				}
+				let conflict = result?.conflictResolutionCancelled || result?.conflicts?.length;
+				let deferred = !result || result.error || conflict || result.pendingRepairs?.length;
+				this._annotationFilePollState.set(item.id, {
+					...token,
+					status: conflict ? 'conflict' : (deferred ? 'deferred' : 'reconciled'),
+					mode
+				});
+				return result;
+			}, error => {
+				if (generation === this._annotationFilePollGeneration && !this._annotationFilePollStopping) {
+					this._annotationFilePollState.set(item.id, {
+						...token,
+						status: 'deferred',
+						mode
+					});
+				}
+				throw error;
+			}));
+		}
+
+		for (let itemID of this._annotationFilePollState.keys()) {
+			if (!seen.has(itemID)) this._annotationFilePollState.delete(itemID);
+		}
+		return Promise.allSettled(recovery);
+	}
+
+	async _getAnnotationFilePollToken(path) {
+		let normalizedPath = String(path).replace(/\\/g, '/');
+		try {
+			let stat = await IOUtils.stat(path);
+			if (stat.type != 'regular') {
+				return { available: false, key: `${normalizedPath}:unavailable` };
+			}
+			return {
+				available: true,
+				key: `${normalizedPath}:${stat.size}:${stat.lastModified}`,
+				path: normalizedPath,
+				size: stat.size,
+				lastModified: stat.lastModified
+			};
+		}
+		catch (error) {
+			// Keep an unavailable placeholder in memory. A later returned file gets a
+			// new token and is reconciled without touching the placeholder meanwhile.
+			return { available: false, key: `${normalizedPath}:unavailable` };
+		}
 	}
 	
 	_loadSidebarState() {
@@ -3491,6 +3698,12 @@ class Reader {
 	}
 
 	_queueAnnotationRecovery(itemID, reason = 'notification') {
+		if (reason !== 'linked-file-poll'
+				&& this._annotationFilePollState.get(itemID)?.status === 'conflict') {
+			// An explicit file/data event can resolve a conflict without changing
+			// the file token. Let the next poll observe the resulting state.
+			this._annotationFilePollState.delete(itemID);
+		}
 		let previous = this._annotationRecoveryQueues.get(itemID) || Promise.resolve();
 		let promise = previous.catch(() => {}).then(async () => {
 			// Let the notifier transaction finish before taking the durable snapshot.
@@ -3545,6 +3758,19 @@ class Reader {
 							interactive: false,
 							lockToken
 						});
+					}
+					// The editor can receive a local change while reconcile is awaiting
+					// the worker. Recheck under the attachment lock immediately before
+					// applying the snapshot; there must be no await between this check
+					// and the apply/broadcast below.
+					let currentReaders = this._readers.filter(reader => (
+						reader.itemID === itemID && reader._fileAnnotationMode
+					));
+					if (currentReaders.some(reader => {
+						let manager = reader._internalReader?._annotationManager;
+						return manager?._savingInProgress || manager?._unsavedAnnotations?.size;
+					})) {
+						return null;
 					}
 					if (readers.length && !result?.fileToken) {
 						// A configured file-backed mode can temporarily fall back to Standard

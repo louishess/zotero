@@ -1819,10 +1819,14 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		}
 	}
 
-	async function _resumeJob(job, reason) {
+	async function _resumeJob(job, reason, alreadyQueued = false) {
 		await _normalizeJob(job);
 		let source = await Zotero.Items.getByLibraryAndKeyAsync(job.libraryID, job.sourceKey);
-		if (source) return this.queueAttachment(source.id, job.reason || reason);
+		if (source) {
+			return alreadyQueued
+				? _processJob(source.id, job.reason || reason)
+				: this.queueAttachment(source.id, job.reason || reason);
+		}
 		let linked = job.newAttachmentKey
 			&& await Zotero.Items.getByLibraryAndKeyAsync(job.libraryID, job.newAttachmentKey);
 		if (linked?.isLinkedFileAttachment()
@@ -2371,6 +2375,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	this.retryFailed = async function (libraryID = Zotero.Libraries.userLibraryID) {
 		let rows = await _getRows(JOB_PREFIX);
 		let retried = [];
+		let that = this;
 		for (let row of rows) {
 			let job;
 			try {
@@ -2380,21 +2385,37 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				continue;
 			}
 			if (job.libraryID != libraryID || job.phase == 'complete') continue;
-			if (job.phase == 'conflict') {
-				// Conflicts require an explicit user retry after the conflicting
-				// artifact or identity is resolved. Resume the last durable phase so
-				// the normal verification path runs again from that checkpoint.
-				if (!job.resumePhase || job.resumePhase == 'complete') continue;
-				job.phase = job.resumePhase;
-				job.progressPhase = job.resumePhase;
-				job.status = 'running';
-				job.waitReason = null;
-				job.resumePhase = null;
-				job.conflictingArtifacts = null;
-			}
-			job.lastError = null;
-			await _saveJob(job);
-			retried.push(_resumeJob.call(this, job, 'retry'));
+			let source = await Zotero.Items.getByLibraryAndKeyAsync(job.libraryID, job.sourceKey);
+			let queueKey = source?.parentKey
+				? `${source.libraryID}/${source.parentKey}`
+				: `item/${source?.id || job.sourceKey}`;
+			let previous = _queues.get(queueKey) || Promise.resolve();
+			let next = previous.catch(Zotero.logError).then(async () => {
+				// Reload after earlier notifier work has drained. Resetting a stale
+				// object here could otherwise overwrite a freshly persisted phase.
+				let current = await _readSetting(_settingKey(JOB_PREFIX, job.libraryID, job.sourceKey));
+				if (!current || current.phase == 'complete') return false;
+				await _normalizeJob(current);
+				if (current.phase == 'conflict') {
+					// Conflicts require an explicit user retry after the conflicting
+					// artifact or identity is resolved. Resume the last durable phase so
+					// the normal verification path runs again from that checkpoint.
+					if (!current.resumePhase || current.resumePhase == 'complete') return false;
+					current.phase = current.resumePhase;
+					current.progressPhase = current.resumePhase;
+					current.status = 'running';
+					current.waitReason = null;
+					current.resumePhase = null;
+					current.conflictingArtifacts = null;
+				}
+				current.lastError = null;
+				await _saveJob(current);
+				return _resumeJob.call(that, current, 'retry', true);
+			});
+			_queues.set(queueKey, next);
+			retried.push(next.finally(() => {
+				if (_queues.get(queueKey) == next) _queues.delete(queueKey);
+			}));
 		}
 		return Promise.allSettled(retried);
 	};

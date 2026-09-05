@@ -66,6 +66,7 @@ describe('Reader annotation notifications', function () {
 	});
 
 	it('reconciles every PDF in a mixed batch, including a closed reader', async function () {
+		Zotero.Reader._annotationFilePollState.set(attachments[1].id, { status: 'conflict' });
 		Zotero.Reader.notify(
 			'modify',
 			'item',
@@ -74,6 +75,7 @@ describe('Reader annotation notifications', function () {
 		);
 		await Zotero.Reader.waitForAnnotationRecovery();
 
+		assert.isFalse(Zotero.Reader._annotationFilePollState.has(attachments[1].id));
 		assert.deepEqual(
 			Zotero.AnnotationStorageCoordinator.reconcile.getCalls().map(call => call.args[0]),
 			attachments.map(attachment => attachment.id)
@@ -116,6 +118,30 @@ describe('Reader annotation notifications', function () {
 		Zotero.Reader.notify('modify', 'file', [attachments[0].id], {});
 		await Zotero.Reader.waitForAnnotationRecovery();
 		sinon.assert.notCalled(Zotero.AnnotationStorageCoordinator.reconcile);
+	});
+
+	it('rechecks iframe edits that arrive while background reconcile is waiting', async function () {
+		let reader = Zotero.Reader._readers[0];
+		let reconcileStarted = Zotero.Promise.defer();
+		let releaseReconcile = Zotero.Promise.defer();
+		Zotero.AnnotationStorageCoordinator.reconcile.callsFake(async () => {
+			reconcileStarted.resolve();
+			await releaseReconcile.promise;
+			return result();
+		});
+
+		Zotero.Reader.notify('modify', 'file', [reader.itemID], {});
+		await reconcileStarted.promise;
+		reader._internalReader = {
+			_annotationManager: {
+				_unsavedAnnotations: new Map([['during-reconcile', {}]]),
+				_savingInProgress: false
+			}
+		};
+		releaseReconcile.resolve();
+		await Zotero.Reader.waitForAnnotationRecovery();
+
+		sinon.assert.notCalled(reader._applyFileAnnotationResult);
 	});
 
 	it('uses durable annotation state to find a closed attachment after deletion', async function () {
@@ -234,5 +260,234 @@ describe('Reader attachment open reservation', function () {
 
 		reader.close();
 		await Zotero.Promise.delay(100);
+	});
+});
+
+describe('Reader linked PDF polling', function () {
+	let sandbox;
+	let article;
+	let attachments;
+	let baseDirectory;
+	let previousBasePath;
+	let previousRelativePathPreference;
+	let previousStorageMode;
+	let previousManagerEnabled;
+	let hadBasePath;
+	let hadRelativePathPreference;
+	let hadStorageMode;
+	let hadManagerEnabled;
+	let pollingWasActive;
+
+	function makeAnnotation(id, comment, y) {
+		return {
+			id,
+			type: 'note',
+			color: '#ffd400',
+			comment,
+			authorName: 'Linked PDF polling test',
+			dateModified: '2026-01-02T03:04:05.000Z',
+			sortIndex: '00000|000000|00000',
+			tags: [],
+			pageLabel: '1',
+			position: { pageIndex: 0, rects: [[50, y, 72, y + 22]] }
+		};
+	}
+
+	async function writePDFAnnotation(attachment, annotation) {
+		let before = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+		await Zotero.PDFWorker.applyAnnotationChanges(
+			attachment.id,
+			{ upserts: [{ annotation }] },
+			{ fileToken: before.fileToken, fileRevision: before.fileRevision },
+			true
+		);
+	}
+
+	beforeEach(async function () {
+		sandbox = sinon.createSandbox();
+		hadBasePath = Zotero.Prefs.prefHasUserValue('baseAttachmentPath');
+		previousBasePath = Zotero.Prefs.get('baseAttachmentPath');
+		hadRelativePathPreference = Zotero.Prefs.prefHasUserValue('saveRelativeAttachmentPath');
+		previousRelativePathPreference = Zotero.Prefs.get('saveRelativeAttachmentPath');
+		hadStorageMode = Zotero.Prefs.prefHasUserValue('reader.annotations.storageMode');
+		previousStorageMode = Zotero.Prefs.get('reader.annotations.storageMode');
+		hadManagerEnabled = Zotero.Prefs.prefHasUserValue('linkedFolderAttachments.enabled');
+		previousManagerEnabled = Zotero.Prefs.get('linkedFolderAttachments.enabled');
+		pollingWasActive = !!Zotero.Reader._annotationFilePollTimer;
+		await Zotero.Reader._stopAnnotationFilePolling();
+		baseDirectory = await getTempDirectory();
+		Zotero.Prefs.set('baseAttachmentPath', baseDirectory);
+		Zotero.Prefs.set('saveRelativeAttachmentPath', true);
+		Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-and-zotero');
+		Zotero.Prefs.set('linkedFolderAttachments.enabled', false);
+		article = await createDataObject('item', { itemType: 'journalArticle' });
+		let paths = ['poll-one.pdf', 'poll-two.pdf'];
+		attachments = [];
+		for (let path of paths) {
+			let destination = PathUtils.join(baseDirectory, path);
+			await IOUtils.copy(
+				PathUtils.join(getTestDataDirectory().path, 'test.pdf'),
+				destination
+			);
+			attachments.push(await Zotero.Attachments.linkFromFileWithRelativePath({
+				path,
+				title: path,
+				contentType: 'application/pdf',
+				parentItemID: article.id
+			}));
+		}
+		Zotero.Reader._startAnnotationFilePolling();
+	});
+
+	afterEach(async function () {
+		await Zotero.Reader._stopAnnotationFilePolling();
+		sandbox.restore();
+		for (let attachment of attachments || []) {
+			try {
+				await Zotero.AnnotationStorageCoordinator.clearLocalState(attachment.id);
+			}
+			catch (error) {}
+		}
+		if (article && Zotero.Items.get(article.id)) await article.eraseTx();
+		if (baseDirectory) {
+			await IOUtils.remove(baseDirectory, { recursive: true, ignoreAbsent: true });
+		}
+		if (hadBasePath) Zotero.Prefs.set('baseAttachmentPath', previousBasePath);
+		else Zotero.Prefs.clear('baseAttachmentPath');
+		if (hadRelativePathPreference) {
+			Zotero.Prefs.set('saveRelativeAttachmentPath', previousRelativePathPreference);
+		}
+		else Zotero.Prefs.clear('saveRelativeAttachmentPath');
+		if (hadStorageMode) {
+			Zotero.Prefs.set('reader.annotations.storageMode', previousStorageMode);
+		}
+		else Zotero.Prefs.clear('reader.annotations.storageMode');
+		if (hadManagerEnabled) {
+			Zotero.Prefs.set('linkedFolderAttachments.enabled', previousManagerEnabled);
+		}
+		else Zotero.Prefs.clear('linkedFolderAttachments.enabled');
+		if (pollingWasActive) Zotero.Reader._startAnnotationFilePolling();
+	});
+
+	it('reconciles changed closed linked PDFs without a Zotero notification', async function () {
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery(attachments.map(attachment => attachment.id));
+		await Zotero.Reader.waitForAnnotationRecovery();
+		let notify = sandbox.spy(Zotero.Reader, 'notify');
+		for (let [index, attachment] of attachments.entries()) {
+			let id = Zotero.DataObjectUtilities.generateKey();
+			let before = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			await Zotero.PDFWorker.applyAnnotationChanges(
+				attachment.id,
+				{ upserts: [{ annotation: makeAnnotation(id, `external ${index}`, 700 - index * 40) }] },
+				{ fileToken: before.fileToken, fileRevision: before.fileRevision },
+				true
+			);
+			if (index === 0) await Zotero.Promise.delay(10);
+		}
+		assert.isFalse(notify.called, 'the test changed bytes directly without a Zotero notification');
+
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery(attachments.map(attachment => attachment.id));
+		for (let attachment of attachments) {
+			let annotations = attachment.getAnnotations().filter(annotation => !annotation.annotationIsExternal);
+			assert.lengthOf(annotations, 1);
+			assert.isTrue(annotations[0].annotationComment.startsWith('external '));
+		}
+	});
+
+	it('rechecks an unchanged file when storage mode returns to Dual', async function () {
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery(attachments.map(attachment => attachment.id));
+		Zotero.Prefs.set('reader.annotations.storageMode', 'standard');
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		let queue = sandbox.stub(Zotero.Reader, '_queueAnnotationRecovery').resolves({
+			conflicts: [],
+			pendingRepairs: []
+		});
+		Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-and-zotero');
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		sinon.assert.callCount(queue, attachments.length);
+	});
+
+	it('does not requeue an unchanged successfully reconciled file', async function () {
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery(attachments.map(attachment => attachment.id));
+		let queue = sandbox.spy(Zotero.Reader, '_queueAnnotationRecovery');
+
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+
+		sinon.assert.notCalled(queue);
+	});
+
+	it('retries a deferred result for the same file on the next bounded poll', async function () {
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery(attachments.map(attachment => attachment.id));
+		await writePDFAnnotation(
+			attachments[0],
+			makeAnnotation(Zotero.DataObjectUtilities.generateKey(), 'deferred file', 680)
+		);
+		let queue = sandbox.stub(Zotero.Reader, '_queueAnnotationRecovery');
+		queue.onFirstCall().resolves(null);
+		queue.onSecondCall().resolves({ conflicts: [], pendingRepairs: [] });
+
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+
+		sinon.assert.calledTwice(queue);
+		assert.equal(
+			Zotero.Reader._annotationFilePollState.get(attachments[0].id).status,
+			'reconciled'
+		);
+	});
+
+	it('reconciles a linked PDF after it returns from an unavailable state', async function () {
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery(attachments.map(attachment => attachment.id));
+		let attachment = attachments[0];
+		let filePath = await attachment.getFilePathAsync();
+		await IOUtils.remove(filePath);
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		assert.equal(
+			Zotero.Reader._annotationFilePollState.get(attachment.id).status,
+			'unavailable'
+		);
+
+		await IOUtils.copy(PathUtils.join(getTestDataDirectory().path, 'test.pdf'), filePath);
+		await writePDFAnnotation(
+			attachment,
+			makeAnnotation(Zotero.DataObjectUtilities.generateKey(), 'returned file', 620)
+		);
+		await Zotero.Reader._pollLinkedPDFAnnotations();
+		await Zotero.Reader.waitForAnnotationRecovery([attachment.id]);
+
+		assert.equal(
+			Zotero.Reader._annotationFilePollState.get(attachment.id).status,
+			'reconciled'
+		);
+		assert.equal(attachment.getAnnotations()[0].annotationComment, 'returned file');
+	});
+
+	it('does not overlap poll passes and tears down its timer', async function () {
+		let entered = Zotero.Promise.defer();
+		let release = Zotero.Promise.defer();
+		let calls = 0;
+		sandbox.stub(Zotero.Reader, '_pollLinkedPDFAnnotations').callsFake(async () => {
+			calls++;
+			entered.resolve();
+			await release.promise;
+			return [];
+		});
+		Zotero.Reader._startAnnotationFilePolling();
+		assert.isOk(Zotero.Reader._annotationFilePollTimer);
+		let first = Zotero.Reader._runAnnotationFilePoll();
+		await entered.promise;
+		let second = Zotero.Reader._runAnnotationFilePoll();
+		assert.strictEqual(first, second);
+		assert.equal(calls, 1);
+		let stopped = Zotero.Reader._stopAnnotationFilePolling();
+		assert.isNull(Zotero.Reader._annotationFilePollTimer);
+		release.resolve();
+		await Promise.all([first, stopped]);
 	});
 });

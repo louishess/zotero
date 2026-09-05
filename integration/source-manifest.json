@@ -5,7 +5,7 @@
   "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
   "mergeCommit": "c376949763febbfb7a2814e80cf32b62d2aee227",
   "translatorPinCommit": "761b7eeb5ff472d485687822eb624f5e67e5c7b6",
-  "connector": "659335473613664bfef3d08e64fe52d7c80e1005",
+  "connector": "c85b868c3507720d0317c5861fb308756e734971",
   "connectorZotero": "4c05017a60b7f418ead44467225ac78c31559c23",
   "documentWorker": "731026106dabe56aef921351b7c3480678ee25fc",
   "translators": "70e15ee76959b45d7404e780ec5f7f7fbc5acde2",
@@ -20,7 +20,7 @@
   "validatedIntegration": "c3d91b11a0e685af7f225b4591ac77ed936ab326",
   "connectorFeatureSource": "4c0baf1a7a975b31867eb9a1280aaf5a3fdd9925",
   "masterGuide": "AGENTS.md",
-  "completionStatus": "implementation-in-progress",
+  "completionStatus": "local-regressions-passed-packaging-and-live-acceptance-pending",
   "zoteroMergeBaseline": {
     "desktop": "637a88cca9c415504b094e41c48c0eb51a8dfbaa",
     "connector": "659335473613664bfef3d08e64fe52d7c80e1005"
@@ -43,5 +43,11 @@
     ],
     "twoMacs": true,
     "availability": "User has no second Mac currently; Dropbox and Google Drive are not configured."
+  },
+  "localValidation": {
+    "desktopCombined": "261/261",
+    "connector": "113 passing; 9 opt-in live diagnostics pending",
+    "workerPDF": "188/188; typecheck passed",
+    "permanentDeletionUI": "3/3"
   }
 }

@@ -466,6 +466,64 @@ describe('Zotero.LinkedFolderAttachmentManager', function () {
 		assert.equal(final.jobs[0].phase, 'complete');
 	});
 
+	it('requires an explicit retry after resolving provider conflict copies', async function () {
+		let parent = await makeArticle();
+		let source = await makePDF(parent);
+		let annotation = await createAnnotation('highlight', source, { comment: 'retry me' });
+		createdItems.push(annotation);
+		let sourcePath = await source.getFilePathAsync();
+		let sourceHash = await Zotero.LinkedFolderAttachmentManager.sha256File(sourcePath);
+		let ownerPath = PathUtils.join(tempDir, '.zotero-linked-folder-owner.json');
+		let rootMarkerPath = PathUtils.join(tempDir, '.zotero-linked-folder-root.json');
+		let conflictOwnerPath = PathUtils.join(
+			tempDir,
+			'.zotero-linked-folder-owner (Cloud Conflict).json'
+		);
+		let conflictRootPath = PathUtils.join(
+			tempDir,
+			'.zotero-linked-folder-root (Cloud Conflict).json'
+		);
+		let injected = false;
+		sandbox.stub(Zotero.Fulltext, 'indexItems').callsFake(async () => {
+			if (injected) return;
+			injected = true;
+			await IOUtils.writeJSON(conflictOwnerPath, await IOUtils.readJSON(ownerPath));
+			await IOUtils.writeJSON(conflictRootPath, await IOUtils.readJSON(rootMarkerPath));
+		});
+		await enableForExplicitCalls();
+
+		let first = await Zotero.LinkedFolderAttachmentManager
+			.convertStoredFileToLinkedFile(source.id);
+		assert.isFalse(first);
+		assert.isOk(Zotero.Items.get(source.id));
+		let intermediate = await Zotero.LinkedFolderAttachmentManager.getMigrationStatus();
+		assert.equal(intermediate.jobs[0].phase, 'conflict');
+		assert.equal(intermediate.jobs[0].resumePhase, 'children-transferred');
+		let linked = await Zotero.Items.getByLibraryAndKeyAsync(
+			source.libraryID,
+			intermediate.jobs[0].newAttachmentKey
+		);
+		createdItems.push(linked);
+		assert.equal(annotation.parentItemID, linked.id);
+		assert.isTrue(await IOUtils.exists(sourcePath));
+
+		await IOUtils.remove(conflictOwnerPath);
+		await IOUtils.remove(conflictRootPath);
+		let retryResults = await Zotero.LinkedFolderAttachmentManager.retryFailed();
+		assert.lengthOf(retryResults, 1);
+		assert.equal(retryResults[0].status, 'fulfilled');
+		await assertLinkedConversion(retryResults[0].value, 'conflict retry');
+		assert.isNotOk(Zotero.Items.get(source.id));
+		assert.equal(annotation.parentItemID, linked.id);
+		assert.equal(
+			await Zotero.LinkedFolderAttachmentManager.sha256File(await linked.getFilePathAsync()),
+			sourceHash
+		);
+		let final = await Zotero.LinkedFolderAttachmentManager.getMigrationStatus();
+		assert.equal(final.jobs[0].phase, 'complete');
+		assert.equal(final.jobs[0].resumePhase, null);
+	});
+
 	it('retains both copies when the stored PDF changes after cloud verification', async function () {
 		let parent = await makeArticle();
 		let source = await makePDF(parent);
