@@ -24,6 +24,7 @@
 */
 
 // TODO: refactor this class
+const AUTOMATIC_ATTACHMENT_DOWNLOADS_VERSION = 1;
 Zotero.Connector = new function() {
 	const CONNECTOR_API_VERSION = 3;
 	const TRANSLATOR_PREFS_VERSION = 1;
@@ -34,6 +35,8 @@ Zotero.Connector = new function() {
 	this.prefs = {
 		reportActiveURL: true
 	};
+	// This is populated by /connector/ping and deliberately kept in memory only.
+	this.automaticAttachmentDownloads = null;
 	
 	/**
 	 * Checks if Zotero is online and passes current status to callback
@@ -47,6 +50,7 @@ Zotero.Connector = new function() {
 			// Connector-local values before deciding whether Zotero is merely busy or
 			// fully offline.
 			this._processTranslatorPreferences();
+			this._clearAutomaticAttachmentDownloads();
 			if (e.status != 0) {
 				Zotero.debug("Checking if Zotero is online returned a non-zero HTTP status.");
 				Zotero.logError(e);
@@ -77,7 +81,10 @@ Zotero.Connector = new function() {
 	 * Process preferences from ping response
 	 * @param {Object} prefs - Preferences object from server response
 	 */
-	this._processPreferences = function(prefs) {
+	this._processPreferences = function(prefs={}) {
+		if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) {
+			prefs = {};
+		}
 		// Populate preference container and legacy top-level fields
 		const PREF_KEYS = [
 			'downloadAssociatedFiles',
@@ -93,6 +100,44 @@ Zotero.Connector = new function() {
 			Zotero.Connector.prefs[key] = val;
 		}
 		this._processTranslatorPreferences(prefs);
+		this._processAutomaticAttachmentDownloads(prefs.automaticAttachmentDownloads);
+	}
+
+	/**
+	 * Validate and cache the Desktop's automatic attachment policy. The policy
+	 * is runtime-only so a disconnected Connector immediately returns to its
+	 * stock behavior.
+	 */
+	this._processAutomaticAttachmentDownloads = function(policy) {
+		this.automaticAttachmentDownloads = _validateAutomaticAttachmentDownloadsPolicy(policy);
+	}
+
+	this._clearAutomaticAttachmentDownloads = function() {
+		this.automaticAttachmentDownloads = null;
+	}
+
+	this.getAutomaticAttachmentDownloads = function() {
+		return this.automaticAttachmentDownloads;
+	}
+
+	/**
+	 * Return whether an attachment may be acquired automatically. An absent or
+	 * invalid Desktop policy intentionally allows the stock Connector behavior.
+	 */
+	this.shouldDownloadAttachment = function(attachment={}, { automatic=true, force=false }={}) {
+		if (!automatic || force || !this.automaticAttachmentDownloads) {
+			return true;
+		}
+
+		let contentType = attachment.contentType || attachment.mimeType || attachment.attachmentContentType;
+		let filename = attachment.filename || attachment.name || attachment.title;
+		let url = attachment.url;
+		let typeKey = _classifyAutomaticAttachment(this.automaticAttachmentDownloads, {
+			contentType,
+			filename,
+			url,
+		});
+		return !typeKey || this.automaticAttachmentDownloads.enabled[typeKey];
 	}
 
 	/**
@@ -144,9 +189,14 @@ Zotero.Connector = new function() {
 	
 	this.ping = async function(payload={}) {
 		let response = await Zotero.Connector.callMethod("ping", payload);
-		if (response && 'prefs' in response) {
+		if (response && typeof response === 'object' && !Array.isArray(response)
+				&& response.prefs && typeof response.prefs === 'object'
+				&& !Array.isArray(response.prefs)) {
 			this._processPreferences(response.prefs);
 			this._processTranslatorHash(response.prefs);
+		}
+		else {
+			this._clearAutomaticAttachmentDownloads();
 		}
 		return response || {};
 	}
@@ -219,6 +269,7 @@ Zotero.Connector = new function() {
 			}
 			if (xhr.status === 0) {
 				Zotero.Connector._processTranslatorPreferences();
+				Zotero.Connector._clearAutomaticAttachmentDownloads();
 				if (Zotero.Connector.isOnline !== false) {
 					Zotero.Connector.isOnline = false;
 					Zotero.Connector.onStateChange(Zotero.Connector.clientVersion)
@@ -242,6 +293,9 @@ Zotero.Connector = new function() {
 				return val;
 			}
 		} catch (e) {
+			if (e && e.status === 0) {
+				Zotero.Connector._clearAutomaticAttachmentDownloads();
+			}
 			if (!(e instanceof Zotero.Connector.CommunicationError) && !(e instanceof Zotero.HTTP.StatusError)){
 				// Unexpected error, including a timeout
 				Zotero.logError(e);
@@ -300,6 +354,99 @@ Zotero.Connector = new function() {
 			}
 		}
 	}
+}
+
+function _validateAutomaticAttachmentDownloadsPolicy(policy) {
+	if (!policy || typeof policy !== 'object' || Array.isArray(policy)
+			|| policy.version !== AUTOMATIC_ATTACHMENT_DOWNLOADS_VERSION
+			|| !Array.isArray(policy.types)
+			|| !Array.isArray(policy.genericMIMETypes)
+			|| !policy.enabled || typeof policy.enabled !== 'object'
+			|| Array.isArray(policy.enabled)) {
+		return null;
+	}
+
+	let types = [];
+	let typeKeys = new Set();
+	for (let type of policy.types) {
+		if (!type || typeof type !== 'object' || Array.isArray(type)
+				|| typeof type.key !== 'string' || !type.key.trim()
+				|| typeof type.extension !== 'string' || !type.extension.trim()
+				|| !Array.isArray(type.mimeTypes)
+				|| typeKeys.has(type.key)) {
+			return null;
+		}
+		let mimeTypes = [];
+		for (let mimeType of type.mimeTypes) {
+			if (typeof mimeType !== 'string' || !mimeType.trim()) {
+				return null;
+			}
+			mimeTypes.push(mimeType.trim().toLowerCase());
+		}
+		typeKeys.add(type.key);
+		types.push({
+			key: type.key,
+			extension: type.extension.trim().replace(/^\./, '').toLowerCase(),
+			mimeTypes,
+		});
+	}
+
+	let genericMIMETypes = [];
+	for (let mimeType of policy.genericMIMETypes) {
+		if (typeof mimeType !== 'string' || !mimeType.trim()) {
+			return null;
+		}
+		genericMIMETypes.push(mimeType.trim().toLowerCase());
+	}
+
+	let enabledKeys = Object.keys(policy.enabled);
+	if (enabledKeys.length !== typeKeys.size
+			|| enabledKeys.some(key => !typeKeys.has(key)
+				|| typeof policy.enabled[key] !== 'boolean')) {
+		return null;
+	}
+
+	let enabled = {};
+	for (let key of typeKeys) {
+		enabled[key] = policy.enabled[key];
+	}
+	return { version: policy.version, types, genericMIMETypes, enabled };
+}
+
+function _classifyAutomaticAttachment(policy, { contentType, filename, url }={}) {
+	let normalizedContentType = typeof contentType === 'string'
+		? contentType.split(';', 1)[0].trim().toLowerCase()
+		: '';
+	let genericMIMETypes = new Set(policy.genericMIMETypes);
+	let mimeTypeMap = new Map();
+	let extensionMap = new Map();
+	for (let type of policy.types) {
+		extensionMap.set(type.extension, type.key);
+		for (let mimeType of type.mimeTypes) {
+			mimeTypeMap.set(mimeType, type.key);
+		}
+	}
+	if (normalizedContentType && !genericMIMETypes.has(normalizedContentType)) {
+		return mimeTypeMap.get(normalizedContentType) || null;
+	}
+	let extension = _getAttachmentExtension(filename) || _getAttachmentExtension(url);
+	return extensionMap.get(extension) || null;
+}
+
+function _getAttachmentExtension(value) {
+	if (!value || typeof value !== 'string') {
+		return null;
+	}
+	let path = value;
+	try {
+		path = new URL(value).pathname;
+	}
+	catch (e) {
+		path = value.split(/[?#]/, 1)[0];
+	}
+	let leafName = path.split(/[\\/]/).pop();
+	let match = leafName && leafName.match(/\.([^.]+)$/);
+	return match ? match[1].toLowerCase() : null;
 }
 
 Zotero.Connector.CommunicationError = function (message, status=0, value='') {

@@ -166,4 +166,52 @@ describe('Connector', function() {
 			}));
 		});
 	});
+
+	describe('automatic attachment download policy', function() {
+		beforeEach(async function() {
+			await background(function() {
+				Zotero.Connector._clearAutomaticAttachmentDownloads();
+			});
+		});
+
+		it('classifies MIME types before generic MIME filename fallback', async function() {
+			let values = await background(function() {
+				Zotero.Connector._processAutomaticAttachmentDownloads({
+					version: 1,
+					types: [{ key: 'pdf', extension: 'pdf', mimeTypes: ['application/pdf'] }],
+					genericMIMETypes: ['application/octet-stream'],
+					enabled: { pdf: false },
+				});
+				return [
+					Zotero.Connector.shouldDownloadAttachment({ mimeType: 'application/pdf', filename: 'file.docx' }),
+					Zotero.Connector.shouldDownloadAttachment({ mimeType: 'application/octet-stream', filename: 'file.pdf' }),
+					Zotero.Connector.shouldDownloadAttachment({ mimeType: 'text/plain', filename: 'file.pdf' }),
+					Zotero.Connector.shouldDownloadAttachment({ mimeType: 'application/pdf' }, { automatic: false }),
+				];
+			});
+			assert.deepEqual(values, [false, false, true, true]);
+		});
+
+		it('allows stock behavior for malformed policy data and clears on disconnect', async function() {
+			let values = await background(function() {
+				Zotero.Connector._processAutomaticAttachmentDownloads({
+					version: 1,
+					types: [{ key: 'pdf', extension: 'pdf', mimeTypes: ['application/pdf'] }],
+					// Missing genericMIMETypes makes this policy invalid.
+					enabled: { pdf: false },
+				});
+				let malformed = Zotero.Connector.shouldDownloadAttachment({ mimeType: 'application/pdf' });
+				Zotero.Connector._processAutomaticAttachmentDownloads({
+					version: 1,
+					types: [{ key: 'pdf', extension: 'pdf', mimeTypes: ['application/pdf'] }],
+					genericMIMETypes: ['application/octet-stream'],
+					enabled: { pdf: false },
+				});
+				Zotero.Connector._clearAutomaticAttachmentDownloads();
+				return [malformed, Zotero.Connector.shouldDownloadAttachment({ mimeType: 'application/pdf' })];
+			});
+			assert.deepEqual(values, [true, true]);
+		});
+
+	});
 });

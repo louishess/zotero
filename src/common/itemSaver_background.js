@@ -25,6 +25,19 @@
 
 Zotero.ItemSaver = Zotero.ItemSaver || {};
 
+function shouldDownloadAttachment(attachment, { automatic=false, force=false }={}) {
+	if (!automatic || force || !Zotero.Connector
+			|| !Zotero.Connector.shouldDownloadAttachment) {
+		return true;
+	}
+	return Zotero.Connector.shouldDownloadAttachment(attachment, { automatic, force });
+}
+
+function isPolicyOptions(value) {
+	return value && typeof value === 'object'
+		&& ('automatic' in value || 'force' in value);
+}
+
 /**
  * Checks if a string contains characters not allowed in HTTP headers (non-ASCII characters)
  * @param {string} str - The string to check
@@ -79,7 +92,18 @@ Zotero.ItemSaver._rfc2047Encode = function(str) {
  * @param attachment
  * @param sessionID 
  */
-Zotero.ItemSaver.saveAttachmentToZotero = async function(attachment, sessionID, tab) {
+Zotero.ItemSaver.saveAttachmentToZotero = async function(attachment, sessionID,
+		tabOrOptions, optionsOrTab) {
+	let tab = tabOrOptions;
+	let options = optionsOrTab || {};
+	if (isPolicyOptions(tabOrOptions)) {
+		options = tabOrOptions;
+		tab = optionsOrTab;
+	}
+	let { automatic=true, force=false } = options;
+	if (!shouldDownloadAttachment(attachment, { automatic, force })) {
+		return { skipped: true, reason: 'automatic-download-disabled' };
+	}
 	let arrayBuffer;
 	if (attachment.data) {
 		arrayBuffer = this._unpackSafariAttachmentData(attachment.data);
@@ -87,6 +111,11 @@ Zotero.ItemSaver.saveAttachmentToZotero = async function(attachment, sessionID, 
 	}
 	if (!arrayBuffer) {
 		arrayBuffer = await this._fetchAttachment(attachment, tab);
+	}
+	// The response may have supplied the only reliable MIME type. Re-check after
+	// fetching so a generic translator hint cannot bypass a disabled type.
+	if (!shouldDownloadAttachment(attachment, { automatic, force })) {
+		return { skipped: true, reason: 'automatic-download-disabled' };
 	}
 	
 	let metadata = JSON.stringify({
@@ -134,8 +163,59 @@ Zotero.ItemSaver.saveStandaloneAttachmentToZotero = async function(attachment, s
 	}, arrayBuffer);
 }
 
-Zotero.ItemSaver.saveAttachmentToServer = async function(attachment, tab) {
-	let promises = []
+Zotero.ItemSaver.saveAttachmentToServer = async function(attachment, tabOrOptions, optionsOrTab) {
+	let tab = tabOrOptions;
+	let options = optionsOrTab || {};
+	if (isPolicyOptions(tabOrOptions)) {
+		options = tabOrOptions;
+		tab = optionsOrTab;
+	}
+	let { automatic=false, force=false } = options;
+	if (automatic && attachment.linkMode !== "linked_url"
+			&& !shouldDownloadAttachment(attachment, { automatic, force })) {
+		return { skipped: true, reason: 'automatic-download-disabled' };
+	}
+
+	// Automatic acquisition must complete and pass its late MIME check before
+	// creating the server attachment item. Keep the explicit path below intact.
+	if (automatic) {
+		// A snapshot:false attachment is a URL-only link. Preserve it even when
+		// its MIME type is disabled, without acquiring or uploading file bytes.
+		if (attachment.linkMode === "linked_url") {
+			attachment.key = await this._createServerAttachmentItem(attachment);
+			return;
+		}
+
+		// SingleFile snapshot
+		if (typeof attachment.data === 'string' && attachment.mimeType === 'text/html') {
+			let snapshotString = attachment.data;
+			attachment.data = new Uint8Array(Zotero.Utilities.getStringByteLength(snapshotString));
+			Zotero.Utilities.stringToUTF8Array(snapshotString, attachment.data);
+		}
+		else if (Zotero.isSafari && attachment.data) {
+			// Safari fetches binary attachments in content script when possible
+			attachment.data = new Uint8Array(this._unpackSafariAttachmentData(attachment.data));
+		}
+
+		let arrayBuffer;
+		if (!attachment.data || attachment.linkMode !== "imported_url") {
+			arrayBuffer = await this._fetchAttachment(attachment, tab);
+		}
+		if (!attachment.data && arrayBuffer) {
+			attachment.data = new Uint8Array(arrayBuffer);
+		}
+		if (!shouldDownloadAttachment(attachment, { automatic, force })) {
+			return { skipped: true, reason: 'automatic-download-disabled' };
+		}
+		if (!attachment.data) return;
+
+		attachment.key = await this._createServerAttachmentItem(attachment);
+		attachment.md5 = this.md5(attachment.data);
+		await Zotero.API.uploadAttachment(attachment);
+		return;
+	}
+
+	let promises = [];
 	promises.push(this._createServerAttachmentItem(attachment));
 
 	// SingleFile snapshot

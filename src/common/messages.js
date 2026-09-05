@@ -159,7 +159,8 @@ var MESSAGES = {
 		},
 		getClientVersion: true,
 		reportActiveURL: false,
-		getPref: true
+		getPref: true,
+		getAutomaticAttachmentDownloads: true,
 	},
 	Connector_Browser: {
 		onSelect: true,

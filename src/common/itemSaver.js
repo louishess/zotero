@@ -28,6 +28,79 @@ const PRIMARY_ATTACHMENT_TYPES = new Set([
 	'application/epub+zip',
 ]);
 
+function isValidAutomaticAttachmentPolicy(policy) {
+	if (!policy || typeof policy !== 'object' || Array.isArray(policy)
+			|| policy.version !== 1 || !Array.isArray(policy.types)
+			|| !Array.isArray(policy.genericMIMETypes)
+			|| !policy.enabled || typeof policy.enabled !== 'object'
+			|| Array.isArray(policy.enabled)) {
+		return false;
+	}
+	let keys = new Set();
+	for (let type of policy.types) {
+		if (!type || typeof type !== 'object' || Array.isArray(type)
+				|| typeof type.key !== 'string' || !type.key.trim()
+				|| typeof type.extension !== 'string' || !type.extension.trim()
+				|| !Array.isArray(type.mimeTypes) || keys.has(type.key)) {
+			return false;
+		}
+		keys.add(type.key);
+		if (type.mimeTypes.some(mimeType => typeof mimeType !== 'string' || !mimeType.trim())) {
+			return false;
+		}
+	}
+	if (policy.genericMIMETypes.some(mimeType =>
+		typeof mimeType !== 'string' || !mimeType.trim())) {
+		return false;
+	}
+	let enabledKeys = Object.keys(policy.enabled);
+	return enabledKeys.length === keys.size
+		&& enabledKeys.every(key => keys.has(key) && typeof policy.enabled[key] === 'boolean');
+}
+
+function getAutomaticAttachmentExtension(value) {
+	if (!value || typeof value !== 'string') return null;
+	let path = value;
+	try {
+		path = new URL(value).pathname;
+	}
+	catch (e) {
+		path = value.split(/[?#]/, 1)[0];
+	}
+	let leafName = path.split(/[\\/]/).pop();
+	let match = leafName && leafName.match(/\.([^.]+)$/);
+	return match ? match[1].toLowerCase() : null;
+}
+
+function shouldDownloadWithAutomaticAttachmentPolicy(policy, attachment) {
+	if (!isValidAutomaticAttachmentPolicy(policy)) return true;
+	let contentType = attachment.contentType || attachment.mimeType || attachment.attachmentContentType;
+	let normalizedContentType = typeof contentType === 'string'
+		? contentType.split(';', 1)[0].trim().toLowerCase()
+		: '';
+	let genericMIMETypes = new Set(policy.genericMIMETypes.map(mimeType =>
+		mimeType.trim().toLowerCase()));
+	let typeKey = null;
+	if (normalizedContentType && !genericMIMETypes.has(normalizedContentType)) {
+		for (let type of policy.types) {
+			if (type.mimeTypes.some(mimeType =>
+				mimeType.trim().toLowerCase() === normalizedContentType)) {
+				typeKey = type.key;
+				break;
+			}
+		}
+	}
+	else {
+		let extension = getAutomaticAttachmentExtension(
+			attachment.filename || attachment.name || attachment.title
+		) || getAutomaticAttachmentExtension(attachment.url);
+		let type = policy.types.find(type =>
+			type.extension.trim().replace(/^\./, '').toLowerCase() === extension);
+		typeKey = type?.key || null;
+	}
+	return !typeKey || policy.enabled[typeKey];
+}
+
 /**
  * Save translated items in JSON format
  *
@@ -45,6 +118,9 @@ let ItemSaver = function(options) {
 	this._itemType = options.itemType;
 	this._items = [];
 	this._singleFile = false;
+	this._automatic = options.automatic !== false;
+	this._force = options.force === true;
+	this._automaticAttachmentPolicy = null;
 	
 	// Add listener for callbacks, but only for Safari or the bookmarklet. In Chrome, we
 	// (have to) save attachments from the inject page.
@@ -105,6 +181,7 @@ ItemSaver.prototype = {
 	
 	_saveToZotero: async function (items, attachmentCallback, itemsDoneCallback=()=>0) {
 		this._items = items;
+		await this._loadAutomaticAttachmentPolicy();
 		var payload = {
 			sessionID: this._sessionID,
 			uri: this._baseURI,
@@ -148,6 +225,10 @@ ItemSaver.prototype = {
 				}
 				else if (attachment.mimeType !== 'text/html' && !downloadAssociatedFiles) {
 					Zotero.debug(`saveToZotero: Ignoring attachment with type ${attachment.mimeType} because downloadAssociatedFiles is disabled`);
+					return false;
+				}
+				if (!this._shouldDownloadAttachment(attachment)) {
+					Zotero.debug(`saveToZotero: Ignoring attachment with type ${attachment.mimeType} because automatic download is disabled`);
 					return false;
 				}
 			
@@ -231,12 +312,20 @@ ItemSaver.prototype = {
 	},
 	
 	async _saveAttachmentsToZotero(attachmentCallback) {
+		await this._loadAutomaticAttachmentPolicy();
 		const shouldAttemptToDownloadOAAttachments = await Zotero.Connector.getPref('downloadAssociatedFiles')
+			&& this._shouldDownloadAttachment({ mimeType: 'application/pdf' });
 		for (let item of this._items) {
 			item.hasPrimaryAttachment = false;
 			for (let attachment of item.attachments) {
 				if (attachment.snapshot === false) {
 					attachmentCallback(attachment, 100);
+					continue;
+				}
+				if (!this._shouldDownloadAttachment(attachment)) {
+					Zotero.debug(`ItemSaver.saveAttachmentsToZotero: Skipping ${attachment.url} because automatic download is disabled`);
+					attachment._automaticDownloadSkipped = true;
+					attachmentCallback(attachment, false, 'automatic-download-disabled');
 					continue;
 				}
 
@@ -251,7 +340,13 @@ ItemSaver.prototype = {
 					// Safari background page fetch doesn't send user's cookies, so we try to
 					// fetch the attachment in the content script
 					await ItemSaver.fetchAttachmentSafari(attachment);
-					await Zotero.ItemSaver.saveAttachmentToZotero(attachment, this._sessionID)
+					let result = await Zotero.ItemSaver.saveAttachmentToZotero(attachment, this._sessionID,
+						{ automatic: this._automatic, force: this._force });
+					if (result && result.skipped) {
+						attachment._automaticDownloadSkipped = true;
+						attachmentCallback(attachment, false, result.reason);
+						continue;
+					}
 					if (attachment.isPrimary) {
 						item.hasPrimaryAttachment = true;
 					}
@@ -277,7 +372,15 @@ ItemSaver.prototype = {
 	},
 	
 	async saveAttachmentFromResolver(item, attachmentCallback) {
+		await this._loadAutomaticAttachmentPolicy();
 		let attachment = item.attachments.find(a => a.isPrimary);
+		if (!this._shouldDownloadAttachment({ mimeType: 'application/pdf' })) {
+			if (attachment) {
+				attachment._automaticDownloadSkipped = true;
+				attachmentCallback(attachment, false, 'automatic-download-disabled');
+			}
+			return { skipped: true, reason: 'automatic-download-disabled' };
+		}
 		try {
 			// Check if we can get an OA PDF from Zotero
 			if (typeof item.hasAttachmentResolvers === "undefined") {
@@ -297,6 +400,13 @@ ItemSaver.prototype = {
 				sessionID: this._sessionID,
 				itemID: item.id,
 			});
+			if (title && title.skipped) {
+				if (attachment) {
+					attachment._automaticDownloadSkipped = true;
+					attachmentCallback(attachment, false, title.reason);
+				}
+				return title;
+			}
 
 			// Translator didn't provide a primary attachment, but we've found an OA one so add an attachment to the item
 			if (!attachment) {
@@ -377,10 +487,13 @@ ItemSaver.prototype = {
 	 */
 	_saveToServer: async function (items, attachmentCallback, itemsDoneCallback=()=>0) {
 		Zotero.debug(`ItemSaver._saveToServer: Saving ${items.length} items to server`);
+		await this._loadAutomaticAttachmentPolicy();
 		var newItems = [], itemIndices = [];
 		
 		for(var i=0, n=items.length; i<n; i++) {
 			var item = items[i];
+			item.attachments = item.attachments.filter(attachment =>
+				attachment.snapshot === false || this._shouldDownloadAttachment(attachment));
 			// deproxify url
 			if (this._proxy && item.url) {
 				item.url = this._proxy.toProper(item.url);
@@ -462,6 +575,12 @@ ItemSaver.prototype = {
 				// Skip attachment due to prefs
 				continue;
 			}
+			if (attachment.snapshot !== false && !this._shouldDownloadAttachment(attachment)) {
+				Zotero.debug(`ItemSaver._saveAttachmentsToServer: Skipping ${attachment.url} because automatic download is disabled`);
+				attachment._automaticDownloadSkipped = true;
+				attachmentCallback(attachment, false, 'automatic-download-disabled');
+				continue;
+			}
 
 			attachment.parentKey = itemKey;
 
@@ -484,7 +603,13 @@ ItemSaver.prototype = {
 			promises.push((async () => {
 				try {
 					await ItemSaver.fetchAttachmentSafari(attachment);
-					await Zotero.ItemSaver.saveAttachmentToServer(attachment);
+					let result = await Zotero.ItemSaver.saveAttachmentToServer(attachment,
+						{ automatic: this._automatic, force: this._force });
+					if (result && result.skipped) {
+						attachment._automaticDownloadSkipped = true;
+						attachmentCallback(attachment, false, result.reason);
+						return;
+					}
 					attachmentCallback(attachment, 100);
 				}
 				catch (e) {
@@ -506,6 +631,28 @@ ItemSaver.prototype = {
 			attachment.referrer = sameOrigin ? url.href : url.origin;
 		} catch (e) {
 			attachment.referrer = url.origin;
+		}
+	},
+
+	_shouldDownloadAttachment(attachment, options={}) {
+		let automatic = options.automatic ?? this._automatic;
+		let force = options.force ?? this._force;
+		return !automatic || force
+			|| shouldDownloadWithAutomaticAttachmentPolicy(this._automaticAttachmentPolicy, attachment);
+	},
+
+	async _loadAutomaticAttachmentPolicy() {
+		if (!Zotero.Connector.getAutomaticAttachmentDownloads) {
+			this._automaticAttachmentPolicy = null;
+			return;
+		}
+		try {
+			let policy = await Zotero.Connector.getAutomaticAttachmentDownloads();
+			this._automaticAttachmentPolicy = isValidAutomaticAttachmentPolicy(policy) ? policy : null;
+		}
+		catch (e) {
+			Zotero.debug(`ItemSaver: Unable to load automatic attachment policy: ${e}`);
+			this._automaticAttachmentPolicy = null;
 		}
 	},
 	
