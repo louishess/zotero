@@ -2641,7 +2641,19 @@ var ZoteroPane = new function () {
 		}
 		
 		if (!prompt || Services.prompt.confirm(window, prompt.title, prompt.text)) {
+			let managedFileDeletion;
+			if (collectionTreeRows[0].isTrash() || collectionTreeRows[0].isBucket()) {
+				managedFileDeletion = await Zotero.LinkedFolderAttachmentManager
+					.prepareManagedFileDeletion(
+						this.itemsView.getSelectedItems().map(item => item.id),
+						{ interactive: true }
+					);
+			}
 			await this.itemsView.deleteSelection(force);
+			if (managedFileDeletion?.approved) {
+				await Zotero.LinkedFolderAttachmentManager
+					.completeManagedFileDeletion(managedFileDeletion);
+			}
 		}
 	}
 	
@@ -2907,6 +2919,12 @@ var ZoteroPane = new function () {
 		if (result) {
 			Zotero.showZoteroPaneProgressMeter(null, true);
 			try {
+				let trashedItems = await Zotero.Items.getDeleted(libraryID, false);
+				let managedFileDeletion = await Zotero.LinkedFolderAttachmentManager
+					.prepareManagedFileDeletion(
+						trashedItems.map(item => item.id),
+						{ interactive: true }
+					);
 				let deletedSearches = await Zotero.Searches.getDeleted(libraryID, true);
 				await Zotero.Searches.erase(deletedSearches);
 				let deletedCollections = await Zotero.Collections.getDeleted(libraryID, true);
@@ -2920,6 +2938,10 @@ var ZoteroPane = new function () {
 						}
 					}
 				);
+				if (managedFileDeletion.approved) {
+					await Zotero.LinkedFolderAttachmentManager
+						.completeManagedFileDeletion(managedFileDeletion);
+				}
 			}
 			finally {
 				Zotero.hideZoteroPaneOverlays();

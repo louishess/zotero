@@ -32,7 +32,7 @@
  */
 Zotero.AnnotationStorageCoordinator = new function () {
 	const SETTING = 'annotationStorageCoordinator';
-	const STATE_VERSION = 1;
+	const STATE_VERSION = 2;
 	const MODE_STANDARD = 'standard';
 	const MODE_PDF_ONLY = 'pdf-only';
 	const MODE_DUAL = 'pdf-and-zotero';
@@ -40,31 +40,194 @@ Zotero.AnnotationStorageCoordinator = new function () {
 	const RESOLUTION_ZOTERO = 'zotero';
 
 	let queues = new Map();
+	let lockTails = new Map();
+	let activeLockTokens = new WeakSet();
+	let lockOwners = new WeakMap();
 
-	this.reconcile = function (itemID, reason = 'unspecified') {
-		return _enqueue(itemID, () => _reconcile(itemID, reason));
+	this.reconcile = function (itemID, reason = 'unspecified', lockToken = null) {
+		return _enqueue(itemID, async lock => {
+			try {
+				return await _reconcile(itemID, reason);
+			}
+			catch (e) {
+				await _recordRecovery(itemID, reason, e);
+				throw e;
+			}
+		}, lockToken);
 	};
 
-	this.applyChanges = function (itemID, changes, expectedState = {}) {
-		return _enqueue(itemID, () => _applyChanges(itemID, changes, expectedState));
+	this.applyChanges = function (itemID, changes, expectedState = {}, lockToken = null) {
+		return _enqueue(itemID, async () => {
+			try {
+				return await _applyChanges(itemID, changes, expectedState);
+			}
+			catch (e) {
+				await _recordRecovery(itemID, 'apply', e);
+				throw e;
+			}
+		}, lockToken);
 	};
 
-	this.resolveConflicts = function (itemID, resolutions) {
-		return _enqueue(itemID, () => _resolveConflicts(itemID, resolutions));
+	this.resolveConflicts = function (itemID, resolutions, lockToken = null) {
+		return _enqueue(itemID, async () => {
+			try {
+				return await _resolveConflicts(itemID, resolutions);
+			}
+			catch (e) {
+				await _recordRecovery(itemID, 'conflict-resolution', e);
+				throw e;
+			}
+		}, lockToken);
 	};
 
-	// Exposed only to allow focused tests and attachment deletion cleanup.
-	this.clearLocalState = async function (itemID) {
-		let attachment = await _getAttachment(itemID);
-		await Zotero.DB.queryAsync(
-			'DELETE FROM settings WHERE setting=? AND key=?',
-			[SETTING, _stateKey(attachment)]
+	/**
+	 * Serialize annotation writes, migrations and reader opens for an attachment.
+	 * The callback receives a token that can be passed to the coordinator methods
+	 * above when it needs to call them without waiting on its own lock. An
+	 * existing token may be supplied to extend a source lock to a replacement
+	 * attachment for the whole migration callback.
+	 *
+	 * An array is accepted for replacement operations that need to lock both the
+	 * old and new attachment identities. IDs are sorted before acquisition.
+	 */
+	this.withAttachmentLock = function (attachmentID, operation, lockToken = null) {
+		return _withAttachmentLocks(attachmentID, operation, lockToken);
+	};
+
+	/**
+	 * Copy durable annotation state when a file attachment is replaced or
+	 * reparented. The source row intentionally remains until the caller has
+	 * verified the replacement and explicitly clears it.
+	 */
+	this.transferState = function (oldAttachmentID, newAttachmentID, options = {}) {
+		options ||= {};
+		let lockToken = options?.lockToken || null;
+		return _withAttachmentLocks(
+			[oldAttachmentID, newAttachmentID],
+			() => _transferState(oldAttachmentID, newAttachmentID, options),
+			lockToken
 		);
 	};
 
-	function _enqueue(itemID, task) {
+	/**
+	 * Return attachment IDs whose durable coordinator state mentions one of the
+	 * supplied native annotation keys. This also covers an annotation delete
+	 * notification, for which the item row may already be gone.
+	 */
+	this.getAttachmentIDsForAnnotationIDs = async function (annotationIDs) {
+		annotationIDs = Array.isArray(annotationIDs)
+			? annotationIDs
+			: (annotationIDs === undefined || annotationIDs === null ? [] : [annotationIDs]);
+		let wanted = annotationIDs.map(value => {
+			if (value && typeof value === 'object') {
+				return { key: String(value.key), libraryID: value.libraryID == null
+					? null : parseInt(value.libraryID) };
+			}
+			return { key: String(value), libraryID: null };
+		});
+		if (!wanted.length) return [];
+		let rows = await Zotero.DB.queryAsync(
+			'SELECT key, value FROM settings WHERE setting=?',
+			[SETTING]
+		);
+		let attachmentIDs = [];
+		for (let row of rows) {
+			let state;
+			try {
+				state = JSON.parse(row.value);
+			}
+			catch (e) {
+				continue;
+			}
+			if (!state || typeof state !== 'object' || Array.isArray(state)) continue;
+			let ids = new Set(Object.keys(state.lastCommon || {}));
+			for (let id of state.pending?.database?.upsertIDs || []) ids.add(String(id));
+			for (let id of state.pending?.database?.deletionIDs || []) ids.add(String(id));
+			for (let rotation of state.pending?.conversion?.rotations || []) {
+				ids.add(String(rotation.oldID));
+				ids.add(String(rotation.newID));
+			}
+			for (let id of state.pending?.conversion?.annotationIDs || []) ids.add(String(id));
+			let rowLibraryID = parseInt(String(row.key).split('/', 2)[0]);
+			if (!wanted.some(reference => ids.has(reference.key)
+				&& (reference.libraryID === null || reference.libraryID === rowLibraryID))) continue;
+			let [libraryID, key] = String(row.key).split('/', 2);
+			try {
+				let attachment = await Zotero.Items.getByLibraryAndKeyAsync(parseInt(libraryID), key);
+				if (attachment?.isPDFAttachment()) attachmentIDs.push(attachment.id);
+			}
+			catch (e) {
+				// A notification may race item unloading. The durable row remains and
+				// startup/sync recovery will retry it once the item cache is available.
+				Zotero.logError(e);
+			}
+		}
+		return [...new Set(attachmentIDs)];
+	};
+
+	/**
+	 * Retry all tracked attachment work. This is intentionally all-settled and
+	 * never resolves conflicts interactively, so startup and sync callers can
+	 * safely run it in the background.
+	 */
+	this.recoverPending = async function ({ attachmentIDs, libraryIDs, reason = 'startup' } = {}) {
+		attachmentIDs = Array.isArray(attachmentIDs)
+			? attachmentIDs
+			: (attachmentIDs === undefined || attachmentIDs === null ? [] : [attachmentIDs]);
+		libraryIDs = libraryIDs === undefined || libraryIDs === null
+			? null
+			: (Array.isArray(libraryIDs) ? libraryIDs : [libraryIDs]);
+		let candidates = new Set(attachmentIDs.map(id => parseInt(id)));
+		// Sync emits an empty list after the final phase; that means the whole
+		// session, so recover every tracked library rather than filtering all out.
+		let libraries = libraryIDs?.length ? new Set(libraryIDs.map(id => parseInt(id))) : null;
+		let rows = await Zotero.DB.queryAsync(
+			'SELECT key FROM settings WHERE setting=?',
+			[SETTING]
+		);
+		for (let row of rows) {
+			let [libraryID, key] = String(row.key).split('/', 2);
+			if (libraries && !libraries.has(parseInt(libraryID))) continue;
+			try {
+				let attachment = await Zotero.Items.getByLibraryAndKeyAsync(parseInt(libraryID), key);
+				if (attachment?.isPDFAttachment()) candidates.add(attachment.id);
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
+		let results = await Promise.allSettled([...candidates].map(id => (
+			this.reconcile(id, reason)
+		)));
+		return results;
+	};
+
+	// Exposed only to allow focused tests and attachment deletion cleanup.
+	this.clearLocalState = async function (itemID, lockToken = null) {
+		_validateLockToken(lockToken);
+		let operation = async () => {
+			let attachment = await _getAttachment(itemID);
+			await Zotero.DB.queryAsync(
+				'DELETE FROM settings WHERE setting=? AND key=?',
+				[SETTING, _stateKey(attachment)]
+			);
+		};
+		if (_ownsLock(lockToken, itemID)) return operation();
+		return _withAttachmentLocks(itemID, operation);
+	};
+
+	function _enqueue(itemID, task, lockToken = null) {
+		_validateLockToken(lockToken);
+		// A callback that already owns this attachment must bypass both the public
+		// operation queue and lock acquisition. Otherwise a queued operation that is
+		// waiting behind the caller's lock can deadlock the migration callback.
+		if (_ownsLock(lockToken, itemID)) {
+			return Promise.resolve().then(() => task(lockToken));
+		}
 		let previous = queues.get(itemID) || Promise.resolve();
-		let promise = previous.catch(() => {}).then(task);
+		let promise = previous.catch(() => {}).then(() => {
+			return _withAttachmentLocks(itemID, task);
+		});
 		queues.set(itemID, promise);
 		promise.then(() => {
 			if (queues.get(itemID) === promise) {
@@ -78,6 +241,83 @@ Zotero.AnnotationStorageCoordinator = new function () {
 		return promise;
 	}
 
+	function _validateLockToken(lockToken) {
+		if (lockToken && !activeLockTokens.has(lockToken)) {
+			throw new Error('Invalid or expired annotation attachment lock token');
+		}
+	}
+
+	function _ownsLock(lockToken, itemID) {
+		return activeLockTokens.has(lockToken)
+			&& lockOwners.get(lockToken)?.has(String(itemID));
+	}
+
+	function _withAttachmentLocks(itemIDs, operation, lockToken = null) {
+		let ids = [...new Set((Array.isArray(itemIDs) ? itemIDs : [itemIDs])
+			.map(id => String(id)))].sort(_compareAttachmentIDs);
+		_validateLockToken(lockToken);
+		if (!ids.length) return Promise.resolve().then(() => operation(Object.freeze({})));
+		if (ids.every(id => _ownsLock(lockToken, id))) {
+			return Promise.resolve().then(() => operation(lockToken));
+		}
+		// A replacement operation commonly owns the old attachment and needs to
+		// add the new attachment to its critical section. Acquire only the missing
+		// identities, then temporarily extend the live token while the callback
+		// runs. This keeps the source lock reentrant and avoids waiting on itself.
+		let missing = ids.filter(id => !_ownsLock(lockToken, id));
+		if (lockToken && missing.length && missing.length < ids.length) {
+			return _withAttachmentLocks(missing, async () => {
+				let ownerKeys = lockOwners.get(lockToken);
+				for (let id of missing) ownerKeys.add(id);
+				try {
+					return await operation(lockToken);
+				}
+				finally {
+					for (let id of missing) ownerKeys.delete(id);
+				}
+			});
+		}
+
+		let token = Object.freeze({});
+		let ownerKeys = new Set();
+		lockOwners.set(token, ownerKeys);
+		activeLockTokens.add(token);
+		let held = [];
+		let acquire = async id => {
+			// Acquire IDs in sorted order, registering the next tail only after the
+			// previous ID is held. This prevents [source,target] from reserving the
+			// target behind a source lock that a migration is trying to extend.
+			let previous = lockTails.get(id) || Promise.resolve();
+			let release;
+			let hold = new Promise(resolve => release = resolve);
+			let tail = previous.then(() => hold);
+			lockTails.set(id, tail);
+			await previous;
+			ownerKeys.add(id);
+			held.push({ id, tail, release });
+		};
+		return (async () => {
+			for (let id of ids) await acquire(id);
+			return operation(token);
+		})().finally(() => {
+			for (let { release } of held.reverse()) release();
+			activeLockTokens.delete(token);
+			lockOwners.delete(token);
+			for (let { id, tail } of held) {
+				if (lockTails.get(id) === tail) lockTails.delete(id);
+			}
+		});
+	}
+
+	function _compareAttachmentIDs(a, b) {
+		let aNumber = Number(a);
+		let bNumber = Number(b);
+		if (Number.isSafeInteger(aNumber) && Number.isSafeInteger(bNumber)) {
+			return aNumber - bNumber;
+		}
+		return a.localeCompare(b);
+	}
+
 	async function _reconcile(itemID, reason) {
 		let attachment = await _getAttachment(itemID);
 		let effectiveMode = await Zotero.PDFWorker.getEffectiveAnnotationStorageMode(attachment);
@@ -86,17 +326,38 @@ Zotero.AnnotationStorageCoordinator = new function () {
 		let canWritePDF = await Zotero.PDFWorker.canWriteAnnotationsToFile(attachment);
 		let pdf = canWritePDF ? await _readPDF(itemID) : null;
 
+		if (state.pending?.database) {
+			if (pdf) {
+				await _repairDatabaseFromPDF(attachment, state, pdf);
+			}
+			else {
+				state.recovery = _waitingRecovery(
+					'reconcile',
+					'PDF is unavailable; pending native annotation repair is deferred'
+				);
+				await _saveState(attachment, state);
+			}
+			state = await _loadState(attachment);
+			native = await _readNative(attachment);
+		}
+
+		// Finish a pending native repair before resuming conversion. A conversion
+		// can rotate or erase native items, so it must see the repaired database
+		// state rather than an interrupted pre-repair snapshot.
 		if (state.pending?.conversion) {
-			await _resumeConversion(attachment, state, native, pdf);
+			if (canWritePDF) {
+				await _resumeConversion(attachment, state, native, pdf);
+			}
+			else {
+				state.recovery = _waitingRecovery(
+					'reconcile',
+					'PDF is not currently writable; pending annotation conversion is deferred'
+				);
+				await _saveState(attachment, state);
+			}
 			state = await _loadState(attachment);
 			native = await _readNative(attachment);
 			pdf = canWritePDF ? await _readPDF(itemID) : null;
-		}
-
-		if (state.pending?.database) {
-			await _repairDatabaseFromPDF(attachment, state, pdf);
-			state = await _loadState(attachment);
-			native = await _readNative(attachment);
 		}
 
 		let appliedMode = state.mode || _inferAppliedMode(effectiveMode, native, pdf);
@@ -125,7 +386,89 @@ Zotero.AnnotationStorageCoordinator = new function () {
 			result = _makeResult(effectiveMode, state.mode || effectiveMode, pdf);
 		}
 		result.reason = reason;
+		if (result.conflicts?.length) {
+			state.recovery = {
+				status: 'waiting',
+				operation: 'conflict-resolution',
+				conflictIDs: result.conflicts.map(conflict => conflict.id),
+				time: new Date().toISOString()
+			};
+			await _saveState(attachment, state);
+		}
+		else if (!Object.keys(state.pending || {}).length) {
+			delete state.recovery;
+			await _saveState(attachment, state);
+		}
+		if (state.recovery) {
+			result.pendingRepairs = [
+				...(result.pendingRepairs || []),
+				...Object.keys(state.pending || {})
+			];
+		}
+		else if (state.pending && Object.keys(state.pending).length === 0) {
+			// A successful retry clears a prior transient waiting/error status.
+			result.pendingRepairs = result.pendingRepairs || [];
+		}
 		return result;
+	}
+
+	async function _transferState(oldAttachmentID, newAttachmentID, options) {
+		let source = await _getAttachment(oldAttachmentID);
+		let destination = await _getAttachment(newAttachmentID);
+		let sourceState = await _loadState(source);
+		let destinationState = await _loadState(destination);
+		if (_hasState(destinationState)
+			&& JSON.stringify(sourceState) !== JSON.stringify(destinationState)
+			&& !options.overwrite) {
+			throw new Error('Cannot transfer annotation state onto a destination with different state');
+		}
+		let state = _clone(sourceState);
+		await _saveState(destination, state);
+		let native = await _readNative(source);
+		let destinationNative = await _readNative(destination);
+		return {
+			sourceKey: _stateKey(source),
+			destinationKey: _stateKey(destination),
+			state: _clone(state),
+			annotationIDs: [...new Set([
+				...Object.keys(native.byID),
+				...Object.keys(destinationNative.byID)
+			])]
+		};
+	}
+
+	function _hasState(state) {
+		return !!(state?.mode || Object.keys(state?.lastCommon || {}).length
+			|| Object.keys(state?.pending || {}).length || state?.recovery);
+	}
+
+	function _waitingRecovery(operation, message) {
+		return {
+			status: 'waiting',
+			operation,
+			message,
+			time: new Date().toISOString()
+		};
+	}
+
+	async function _recordRecovery(itemID, reason, error) {
+		try {
+			let attachment = await _getAttachment(itemID);
+			let state = await _loadState(attachment);
+			state.recovery = {
+				status: 'error',
+				reason,
+				name: error?.name || 'Error',
+				message: error?.message || String(error),
+				time: new Date().toISOString()
+			};
+			await _saveState(attachment, state);
+		}
+		catch (recoveryError) {
+			// The original failure is more useful to callers. If the attachment has
+			// already disappeared, there is no durable row that can be retained.
+			Zotero.logError(recoveryError);
+		}
 	}
 
 	async function _applyChanges(itemID, changes, expectedState) {
@@ -298,6 +641,7 @@ Zotero.AnnotationStorageCoordinator = new function () {
 		let refreshed = await _readPDF(itemID);
 		let refreshedNative = await _readNative(attachment);
 		_updateCommonState(state, refreshed, refreshedNative);
+		delete state.recovery;
 		await _saveState(attachment, state);
 		return _makeResult(mode, mode, refreshed, {
 			upserts: nativeUpserts,
@@ -709,11 +1053,14 @@ Zotero.AnnotationStorageCoordinator = new function () {
 			fileToken: expected.fileToken,
 			fileRevision: expected.fileRevision
 		};
-		let result = await Zotero.PDFWorker.applyAnnotationChanges(
+		let result = await _withManagedFileWrite(
 			itemID,
-			changes,
-			expectedState,
-			true
+			() => Zotero.PDFWorker.applyAnnotationChanges(
+				itemID,
+				changes,
+				expectedState,
+				true
+			)
 		);
 		// New worker results contain the verified post-write snapshot. Re-read
 		// when running against an older manager so coordinator semantics stay the same.
@@ -721,6 +1068,14 @@ Zotero.AnnotationStorageCoordinator = new function () {
 			return _readPDF(itemID);
 		}
 		return _normalizePDFResult(result);
+	}
+
+	async function _withManagedFileWrite(itemID, operation) {
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		if (typeof manager?.withManagedFileWrite === 'function') {
+			return manager.withManagedFileWrite(itemID, operation);
+		}
+		return operation();
 	}
 
 	function _normalizePDFResult(result) {
@@ -801,14 +1156,27 @@ Zotero.AnnotationStorageCoordinator = new function () {
 			state = value ? JSON.parse(value) : {};
 		}
 		catch (e) {
-			Zotero.logError(e);
-			state = {};
+			let error = new Error('Invalid persisted annotation coordinator state');
+			error.cause = e;
+			throw error;
 		}
+		if (!state || typeof state !== 'object' || Array.isArray(state)) {
+			throw new Error('Invalid persisted annotation coordinator state');
+		}
+		if (state.version !== undefined
+			&& state.version !== 1
+			&& state.version !== STATE_VERSION) {
+			throw new Error(`Unsupported annotation coordinator state version '${state.version}'`);
+		}
+		// Version 1 had the same mode, three-way digest and pending phase fields.
+		// Normalize it in memory and preserve the pending work while the next
+		// successful operation writes version 2.
 		return {
 			version: STATE_VERSION,
-			mode: state.version === STATE_VERSION ? state.mode || null : null,
-			lastCommon: state.version === STATE_VERSION ? state.lastCommon || {} : {},
-			pending: state.version === STATE_VERSION ? state.pending || {} : {}
+			mode: state.mode || null,
+			lastCommon: state.lastCommon || {},
+			pending: state.pending || {},
+			recovery: state.recovery || null
 		};
 	}
 
@@ -817,7 +1185,8 @@ Zotero.AnnotationStorageCoordinator = new function () {
 			version: STATE_VERSION,
 			mode: state.mode || null,
 			lastCommon: state.lastCommon || {},
-			pending: state.pending || {}
+			pending: state.pending || {},
+			recovery: state.recovery || null
 		};
 		await Zotero.DB.queryAsync(
 			'REPLACE INTO settings (setting, key, value) VALUES (?, ?, ?)',

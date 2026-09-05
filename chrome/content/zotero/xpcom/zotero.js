@@ -769,6 +769,8 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 			
 			Zotero.QuickCopy.init();
 			Zotero.addShutdownListener(() => Zotero.QuickCopy.uninit());
+			await Zotero.LinkedFolderAttachmentManager.init();
+			Zotero.addShutdownListener(() => Zotero.LinkedFolderAttachmentManager.uninit());
 			
 			Zotero.Feeds.init();
 			Zotero.addShutdownListener(() => Zotero.Feeds.uninit());

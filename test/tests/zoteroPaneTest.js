@@ -889,6 +889,55 @@ describe("ZoteroPane", function () {
 
 
 	describe("#emptyTrash()", function () {
+		it("finishes managed-file deletion only after the item is erased", async function () {
+			let item = await createDataObject('item', { deleted: true });
+			let itemID = item.id;
+			let plan = { approved: true, destructive: true, entries: [] };
+			let sandbox = sinon.createSandbox();
+			try {
+				let prepare = sandbox.stub(Zotero.LinkedFolderAttachmentManager, 'prepareManagedFileDeletion')
+					.callsFake(async ids => {
+						assert.include(ids, itemID);
+						assert.isOk(Zotero.Items.get(itemID));
+						return plan;
+					});
+				let complete = sandbox.stub(Zotero.LinkedFolderAttachmentManager, 'completeManagedFileDeletion')
+					.callsFake(async receivedPlan => {
+						assert.strictEqual(receivedPlan, plan);
+						assert.isFalse(Zotero.Items.exists(itemID));
+					});
+				await selectTrash(win);
+				let dialog = waitForDialog();
+				await zp.emptyTrash();
+				await dialog;
+				sinon.assert.calledOnce(prepare);
+				sinon.assert.calledOnce(complete);
+			}
+			finally {
+				sandbox.restore();
+			}
+		});
+
+		it("retains managed files when their separate removal is declined", async function () {
+			let item = await createDataObject('item', { deleted: true });
+			let itemID = item.id;
+			let sandbox = sinon.createSandbox();
+			try {
+				sandbox.stub(Zotero.LinkedFolderAttachmentManager, 'prepareManagedFileDeletion')
+					.resolves({ approved: false, destructive: false, entries: [] });
+				let complete = sandbox.stub(Zotero.LinkedFolderAttachmentManager, 'completeManagedFileDeletion');
+				await selectTrash(win);
+				let dialog = waitForDialog();
+				await zp.emptyTrash();
+				await dialog;
+				assert.isFalse(Zotero.Items.exists(itemID));
+				sinon.assert.notCalled(complete);
+			}
+			finally {
+				sandbox.restore();
+			}
+		});
+
 		it("should clear the undo/redo history", async function () {
 			// Record an undo entry
 			Zotero.UndoHistory.clear();

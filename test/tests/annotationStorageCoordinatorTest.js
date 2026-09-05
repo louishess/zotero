@@ -49,7 +49,15 @@ describe('Zotero.AnnotationStorageCoordinator', function () {
 	}
 
 	beforeEach(async function () {
+		// Coordinator tests use one in-memory PDF snapshot for every attachment.
+		// Keep reader notification recovery in the dedicated reader suite so an
+		// item notifier from one fixture cannot mutate another fixture's snapshot.
+		await Zotero.Reader.waitForAnnotationRecovery();
 		sandbox = sinon.createSandbox();
+		sandbox.stub(Zotero.Reader, '_queueAnnotationRecoveryForNotification')
+			.callsFake(() => Promise.resolve());
+		sandbox.stub(Zotero.Reader, '_queueAnnotationRecoveryForLibraries')
+			.callsFake(() => Promise.resolve());
 		attachment = await importFileAttachment('test.pdf');
 		mode = 'pdf-and-zotero';
 		pdfAnnotations = new Map();
@@ -93,6 +101,7 @@ describe('Zotero.AnnotationStorageCoordinator', function () {
 
 	afterEach(async function () {
 		try {
+			await Zotero.Reader.waitForAnnotationRecovery();
 			await Zotero.AnnotationStorageCoordinator.clearLocalState(attachment.id);
 		}
 		catch (e) {
@@ -103,6 +112,7 @@ describe('Zotero.AnnotationStorageCoordinator', function () {
 		if (Zotero.Items.get(attachment.id)) {
 			await attachment.eraseTx();
 		}
+		await Zotero.Reader.waitForAnnotationRecovery();
 	});
 
 	it('writes and verifies the PDF before creating the native mirror', async function () {
@@ -344,6 +354,204 @@ describe('Zotero.AnnotationStorageCoordinator', function () {
 		assert.isFalse(pdfAnnotations.has(id));
 		assert.isOk(Zotero.Items.getByLibraryAndKey(attachment.libraryID, id));
 	});
+
+	it('serializes attachment locks and permits a reentrant coordinator call', async function () {
+		let started = Zotero.Promise.defer();
+		let release = Zotero.Promise.defer();
+		let events = [];
+		let first = Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+			attachment.id,
+			async lockToken => {
+				events.push('first');
+				started.resolve();
+				await release.promise;
+				await Zotero.AnnotationStorageCoordinator.reconcile(
+					attachment.id,
+					'lock-reentrant',
+					lockToken
+				);
+				events.push('first-done');
+			}
+		);
+		await started.promise;
+		let second = Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+			attachment.id,
+			async () => events.push('second')
+		);
+		await Zotero.Promise.delay(20);
+		assert.deepEqual(events, ['first']);
+		release.resolve();
+		await Promise.all([first, second]);
+		assert.deepEqual(events, ['first', 'first-done', 'second']);
+	});
+
+	it('rejects forged attachment lock tokens', function () {
+		assert.throws(
+			() => Zotero.AnnotationStorageCoordinator.reconcile(
+				attachment.id,
+				'forged-token',
+				{ keys: new Set([String(attachment.id)]) }
+			),
+			/Invalid or expired annotation attachment lock token/
+		);
+	});
+
+	it('extends a source lock without deadlocking an overlapping replacement lock', async function () {
+		let started = Zotero.Promise.defer();
+		let release = Zotero.Promise.defer();
+		let replacement = `${attachment.id}-replacement`;
+		let extendedToken;
+		let migration = Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+			attachment.id,
+			async sourceToken => {
+				started.resolve();
+				await release.promise;
+				return Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+					[attachment.id, replacement],
+					async migrationToken => extendedToken = migrationToken,
+					sourceToken
+				);
+			}
+		);
+		await started.promise;
+		let overlapping = Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+				[attachment.id, replacement],
+			async () => 'overlapping'
+		);
+		release.resolve();
+		await migration;
+		assert.isOk(extendedToken);
+		assert.equal(await overlapping, 'overlapping');
+	});
+
+	it('holds the attachment reservation through reader open before migration starts', async function () {
+		let started = Zotero.Promise.defer();
+		let release = Zotero.Promise.defer();
+		sandbox.stub(Zotero.Reader, '_openWithAttachmentLock').callsFake(async (
+			itemID, _location, _options, lockToken
+		) => {
+			assert.equal(itemID, attachment.id);
+			assert.isOk(lockToken);
+			started.resolve();
+			await release.promise;
+			return 'reader-opened';
+		});
+
+		let opening = Zotero.Reader.open(attachment.id, null, {});
+		await started.promise;
+		let migrationStarted = false;
+		let migration = Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+			attachment.id,
+			async () => {
+				migrationStarted = true;
+			}
+		);
+		await Zotero.Promise.delay(20);
+		assert.isFalse(migrationStarted);
+		release.resolve();
+		assert.equal(await opening, 'reader-opened');
+		await migration;
+		assert.isTrue(migrationStarted);
+	});
+
+	it('transfers coordinator recovery state without changing native annotation keys', async function () {
+		let replacement = await importFileAttachment('test.pdf');
+		let id = 'TRNSFABC';
+		try {
+			await Zotero.AnnotationStorageCoordinator.applyChanges(
+				attachment.id,
+				{ upserts: [makeAnnotation(id, 'keep key')] }
+			);
+			let result = await Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+				attachment.id,
+				lockToken => Zotero.AnnotationStorageCoordinator.withAttachmentLock(
+					[attachment.id, replacement.id],
+					migrationToken => Zotero.AnnotationStorageCoordinator.transferState(
+						attachment.id,
+						replacement.id,
+						{ lockToken: migrationToken }
+					),
+					lockToken
+				)
+			);
+			assert.deepEqual(result.annotationIDs, [id]);
+			assert.equal(result.state.lastCommon[id], digest(makeAnnotation(id, 'keep key')));
+			let sourceValue = await Zotero.DB.valueQueryAsync(
+				'SELECT value FROM settings WHERE setting=? AND key=?',
+				['annotationStorageCoordinator', `${attachment.libraryID}/${attachment.key}`]
+			);
+			let destinationValue = await Zotero.DB.valueQueryAsync(
+				'SELECT value FROM settings WHERE setting=? AND key=?',
+				['annotationStorageCoordinator', `${replacement.libraryID}/${replacement.key}`]
+			);
+			assert.isOk(sourceValue, 'source state remains available for verification');
+			assert.deepEqual(JSON.parse(destinationValue).lastCommon, JSON.parse(sourceValue).lastCommon);
+			assert.isOk(Zotero.Items.getByLibraryAndKey(attachment.libraryID, id));
+		}
+		finally {
+			await Zotero.AnnotationStorageCoordinator.clearLocalState(replacement.id);
+			if (Zotero.Items.get(replacement.id)) await replacement.eraseTx();
+		}
+	});
+
+	it('migrates v1 state without dropping pending work or recovery markers', async function () {
+		let replacement = await importFileAttachment('test.pdf');
+		let state = {
+			version: 1,
+			mode: 'pdf-and-zotero',
+			lastCommon: { LEGACYAB: 'legacy-digest' },
+			pending: {
+				conversion: {
+					from: 'pdf-and-zotero',
+					to: 'pdf-only',
+					phase: 'prepared',
+					rotations: [{ oldID: 'LEGACYAB', newID: 'LEGACYCD' }]
+				}
+			},
+			recovery: { status: 'waiting', operation: 'conversion' }
+		};
+		try {
+			await Zotero.DB.queryAsync(
+				'REPLACE INTO settings (setting, key, value) VALUES (?, ?, ?)',
+				['annotationStorageCoordinator', `${attachment.libraryID}/${attachment.key}`, JSON.stringify(state)]
+			);
+			let result = await Zotero.AnnotationStorageCoordinator.transferState(
+				attachment.id,
+				replacement.id
+			);
+			assert.equal(result.state.version, 2);
+			assert.deepEqual(result.state.lastCommon, state.lastCommon);
+			assert.deepEqual(result.state.pending, state.pending);
+			assert.deepEqual(result.state.recovery, state.recovery);
+		}
+		finally {
+			await Zotero.AnnotationStorageCoordinator.clearLocalState(replacement.id);
+			if (Zotero.Items.get(replacement.id)) await replacement.eraseTx();
+		}
+	});
+
+	it('fails closed on an unknown persisted state version', async function () {
+		let state = {
+			version: 99,
+			mode: 'pdf-and-zotero',
+			lastCommon: { FUTUREAB: 'future-digest' },
+			pending: { database: { upsertIDs: ['FUTUREAB'], deletionIDs: [] } },
+			recovery: { status: 'waiting', operation: 'future' }
+		};
+		await Zotero.DB.queryAsync(
+			'REPLACE INTO settings (setting, key, value) VALUES (?, ?, ?)',
+			['annotationStorageCoordinator', `${attachment.libraryID}/${attachment.key}`, JSON.stringify(state)]
+		);
+		let error = await getPromiseError(
+			Zotero.AnnotationStorageCoordinator.reconcile(attachment.id, 'unknown-state')
+		);
+		assert.include(error.message, 'Unsupported annotation coordinator state version');
+		let persisted = await Zotero.DB.valueQueryAsync(
+			'SELECT value FROM settings WHERE setting=? AND key=?',
+			['annotationStorageCoordinator', `${attachment.libraryID}/${attachment.key}`]
+		);
+		assert.deepEqual(JSON.parse(persisted), state);
+	});
 });
 
 describe('Zotero.AnnotationStorageCoordinator with the real PDF worker', function () {
@@ -381,6 +589,7 @@ describe('Zotero.AnnotationStorageCoordinator with the real PDF worker', functio
 	});
 
 	afterEach(async function () {
+		await Zotero.Reader.waitForAnnotationRecovery();
 		if (attachments) {
 			for (let attachment of attachments) {
 				try {
@@ -471,6 +680,87 @@ describe('Zotero.AnnotationStorageCoordinator with the real PDF worker', functio
 			'main attachment'
 		);
 		assert.isFalse(attachments[1].getAnnotations().some(x => x.key === 'SIPDF234'));
+	});
+
+	it('recovers a native deletion for a closed PDF and writes a tombstone', async function () {
+		let attachment = attachments[0];
+		let id = 'CLSDABCD';
+		let previousReaders = Zotero.Reader._readers;
+		Zotero.Reader._readers = previousReaders.filter(reader => reader.itemID !== attachment.id);
+		try {
+			await Zotero.AnnotationStorageCoordinator.applyChanges(attachment.id, {
+				upserts: [makeAnnotation(id, 'closed target', 700)]
+			});
+			await Zotero.Reader.waitForAnnotationRecovery();
+			let native = attachment.getAnnotations().find(item => item.key === id);
+			assert.isOk(native);
+			await native.eraseTx();
+			await Zotero.Reader.waitForAnnotationRecovery([attachment.id]);
+
+			let pdf = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+			assert.isFalse(pdf.annotations.some(annotation => annotation.id === id));
+			assert.isTrue(pdf.tombstones.some(tombstone => tombstone.id === id));
+			assert.isFalse(attachment.getAnnotations().some(item => item.key === id));
+		}
+		finally {
+			Zotero.Reader._readers = previousReaders;
+		}
+	});
+
+	it('reconciles a mixed notification batch for two closed PDFs', async function () {
+		let previousReaders = Zotero.Reader._readers;
+		Zotero.Reader._readers = previousReaders.filter(reader => (
+			!attachments.some(attachment => attachment.id === reader.itemID)
+		));
+		let entries = [
+			{ attachment: attachments[0], id: 'BATCHABC', comment: 'first base', y: 700 },
+			{ attachment: attachments[1], id: 'BATCHDEF', comment: 'second base', y: 650 }
+		];
+		try {
+			for (let entry of entries) {
+				await Zotero.AnnotationStorageCoordinator.applyChanges(entry.attachment.id, {
+					upserts: [makeAnnotation(entry.id, entry.comment, entry.y)]
+				});
+			}
+			await Zotero.Reader.waitForAnnotationRecovery();
+			let snapshots = await Promise.all(entries.map(entry => (
+				Zotero.PDFWorker.readAnnotations(entry.attachment.id, true)
+			)));
+			for (let [index, entry] of entries.entries()) {
+				let base = snapshots[index];
+				let changed = makeAnnotation(entry.id, `${entry.comment} changed`, entry.y);
+				await Zotero.PDFWorker.applyAnnotationChanges(
+					entry.attachment.id,
+					{ upserts: [{
+						annotation: changed,
+						source: base.sources[entry.id],
+						baseDigest: base.digests[entry.id]
+					}] },
+					{ fileToken: base.fileToken, fileRevision: base.fileRevision },
+					true
+				);
+			}
+			Zotero.Reader.notify('modify', 'item', entries.map(entry => entry.attachment.id), {});
+			await Zotero.Reader.waitForAnnotationRecovery();
+
+			for (let entry of entries) {
+				let pdf = await Zotero.PDFWorker.readAnnotations(entry.attachment.id, true);
+				assert.equal(
+					pdf.annotations.find(annotation => annotation.id === entry.id).comment,
+					`${entry.comment} changed`
+				);
+				let native = entry.attachment.getAnnotations().find(item => item.key === entry.id);
+				assert.equal(native.annotationComment, `${entry.comment} changed`);
+				let value = await Zotero.DB.valueQueryAsync(
+					'SELECT value FROM settings WHERE setting=? AND key=?',
+					['annotationStorageCoordinator', `${entry.attachment.libraryID}/${entry.attachment.key}`]
+				);
+				assert.equal(JSON.parse(value).lastCommon[entry.id], pdf.digests[entry.id]);
+			}
+		}
+		finally {
+			Zotero.Reader._readers = previousReaders;
+		}
 	});
 
 	for (let from of ['standard', 'pdf-only', 'pdf-and-zotero']) {

@@ -71,6 +71,8 @@ const xpcomFilesLocal = [
 	'api',
 	'attachments',
 	'automaticAttachmentDownloads',
+	'linkedFolderProviders',
+	'linkedFolderAttachmentManager',
 	'attachmentReadObserver',
 	'browserRequest',
 	'cite',
