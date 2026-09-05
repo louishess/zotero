@@ -1,0 +1,16 @@
+{
+  "scope": "SI downloads plus three-mode PDF annotations; excludes linked-folder and automatic-download WIP",
+  "branch": "integrate/si-and-dual-annotations",
+  "annotationBase": "52ac324e2bc9ed3df7726bd098997155293bf4ac",
+  "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
+  "mergeCommit": "c376949763febbfb7a2814e80cf32b62d2aee227",
+  "translatorPinCommit": "761b7eeb5ff472d485687822eb624f5e67e5c7b6",
+  "connector": "4c0baf1a7a975b31867eb9a1280aaf5a3fdd9925",
+  "connectorZotero": "4c05017a6",
+  "documentWorker": "731026106dabe56aef921351b7c3480678ee25fc",
+  "translators": "70e15ee76959b45d7404e780ec5f7f7fbc5acde2",
+  "workerBundlePrerequisite": "6d0c0ce45d96a4ed5b697927306b1e9207a02041",
+  "lockfileSHA256": "439557d300fd590b8e9cf1004f055fd6ece636647c7ec25e9132e6e9e36c6585",
+  "node": "v26.5.0",
+  "npm": "11.17.0"
+}

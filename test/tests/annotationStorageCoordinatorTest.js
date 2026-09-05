@@ -345,3 +345,163 @@ describe('Zotero.AnnotationStorageCoordinator', function () {
 		assert.isOk(Zotero.Items.getByLibraryAndKey(attachment.libraryID, id));
 	});
 });
+
+describe('Zotero.AnnotationStorageCoordinator with the real PDF worker', function () {
+	let article;
+	let attachments;
+	let previousStorageMode;
+	let hadStorageModeUserValue;
+
+	function makeAnnotation(id, comment, y) {
+		return {
+			id,
+			type: 'note',
+			color: '#ffd400',
+			comment,
+			authorName: 'Coordinator integration test',
+			dateModified: '2026-01-02T03:04:05.000Z',
+			sortIndex: '00000|000000|00000',
+			tags: [],
+			pageLabel: '1',
+			position: { pageIndex: 0, rects: [[50, y, 72, y + 22]] }
+		};
+	}
+
+	beforeEach(async function () {
+		hadStorageModeUserValue = Zotero.Prefs.prefHasUserValue(
+			'reader.annotations.storageMode'
+		);
+		previousStorageMode = Zotero.Prefs.get('reader.annotations.storageMode');
+		Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-and-zotero');
+		article = await createDataObject('item', { itemType: 'journalArticle' });
+		attachments = await Promise.all([
+			importFileAttachment('test.pdf', { parentID: article.id }),
+			importFileAttachment('test.pdf', { parentID: article.id })
+		]);
+	});
+
+	afterEach(async function () {
+		if (attachments) {
+			for (let attachment of attachments) {
+				try {
+					await Zotero.AnnotationStorageCoordinator.clearLocalState(attachment.id);
+				}
+				catch (e) {}
+			}
+		}
+		if (article && Zotero.Items.get(article.id)) {
+			await article.eraseTx();
+		}
+		if (hadStorageModeUserValue) {
+			Zotero.Prefs.set('reader.annotations.storageMode', previousStorageMode);
+		}
+		else {
+			Zotero.Prefs.clear('reader.annotations.storageMode');
+		}
+	});
+
+	it('keeps same-named attachment annotations isolated across real PDF writes and reconciliation', async function () {
+		assert.equal(attachments[0].attachmentFilename, attachments[1].attachmentFilename);
+		assert.notEqual(attachments[0].key, attachments[1].key);
+		assert.equal(attachments[0].parentID, article.id);
+		assert.equal(attachments[1].parentID, article.id);
+		let firstPath = await attachments[0].getFilePathAsync();
+		let secondPath = await attachments[1].getFilePathAsync();
+		assert.notEqual(firstPath, secondPath);
+
+		let first = makeAnnotation('MAIN2345', 'main attachment', 700);
+		let second = makeAnnotation('SIPDF234', 'supporting information', 650);
+		await Zotero.AnnotationStorageCoordinator.applyChanges(
+			attachments[0].id,
+			{ upserts: [first] }
+		);
+		await Zotero.AnnotationStorageCoordinator.applyChanges(
+			attachments[1].id,
+			{ upserts: [second] }
+		);
+
+		let firstPDF = await Zotero.PDFWorker.readAnnotations(attachments[0].id, true);
+		let secondPDF = await Zotero.PDFWorker.readAnnotations(attachments[1].id, true);
+		assert.deepEqual(firstPDF.annotations.filter(x => x.id).map(x => x.id), ['MAIN2345']);
+		assert.deepEqual(secondPDF.annotations.filter(x => x.id).map(x => x.id), ['SIPDF234']);
+		assert.equal(attachments[0].getAnnotations().filter(x => !x.annotationIsExternal).length, 1);
+		assert.equal(attachments[1].getAnnotations().filter(x => !x.annotationIsExternal).length, 1);
+		assert.equal(attachments[0].getAnnotations().find(x => x.key === 'MAIN2345').parentID, attachments[0].id);
+		assert.equal(attachments[1].getAnnotations().find(x => x.key === 'SIPDF234').parentID, attachments[1].id);
+
+		await Zotero.AnnotationStorageCoordinator.applyChanges(
+			attachments[1].id,
+			{ upserts: [makeAnnotation('SIPDF234', 'edited supporting information', 650)] }
+		);
+		firstPDF = await Zotero.PDFWorker.readAnnotations(attachments[0].id, true);
+		secondPDF = await Zotero.PDFWorker.readAnnotations(attachments[1].id, true);
+		assert.equal(firstPDF.annotations.find(x => x.id === 'MAIN2345').comment, 'main attachment');
+		assert.equal(secondPDF.annotations.find(x => x.id === 'SIPDF234').comment, 'edited supporting information');
+		assert.equal(attachments[0].getAnnotations().find(x => x.key === 'MAIN2345').annotationComment, 'main attachment');
+		assert.equal(attachments[1].getAnnotations().find(x => x.key === 'SIPDF234').annotationComment, 'edited supporting information');
+
+		await Zotero.AnnotationStorageCoordinator.applyChanges(
+			attachments[1].id,
+			{ deletions: [{ id: 'SIPDF234' }] }
+		);
+		firstPDF = await Zotero.PDFWorker.readAnnotations(attachments[0].id, true);
+		secondPDF = await Zotero.PDFWorker.readAnnotations(attachments[1].id, true);
+		assert.isOk(firstPDF.annotations.find(x => x.id === 'MAIN2345'));
+		assert.isFalse(secondPDF.annotations.some(x => x.id === 'SIPDF234'));
+		assert.isOk(attachments[0].getAnnotations().find(x => x.key === 'MAIN2345'));
+		assert.isFalse(attachments[1].getAnnotations().some(x => x.key === 'SIPDF234'));
+
+		await Zotero.AnnotationStorageCoordinator.clearLocalState(attachments[0].id);
+		await Zotero.AnnotationStorageCoordinator.clearLocalState(attachments[1].id);
+
+		let firstResult = await Zotero.AnnotationStorageCoordinator.reconcile(
+			attachments[0].id,
+			'reopen'
+		);
+		let secondResult = await Zotero.AnnotationStorageCoordinator.reconcile(
+			attachments[1].id,
+			'reopen'
+		);
+		assert.lengthOf(firstResult.conflicts, 0);
+		assert.lengthOf(secondResult.conflicts, 0);
+		assert.equal(firstResult.annotations.find(x => x.id === 'MAIN2345').comment, 'main attachment');
+		assert.isFalse(secondResult.annotations.some(x => x.id === 'SIPDF234'));
+		assert.equal(
+			attachments[0].getAnnotations().find(x => x.key === 'MAIN2345').annotationComment,
+			'main attachment'
+		);
+		assert.isFalse(attachments[1].getAnnotations().some(x => x.key === 'SIPDF234'));
+	});
+
+	for (let from of ['standard', 'pdf-only', 'pdf-and-zotero']) {
+		for (let to of ['standard', 'pdf-only', 'pdf-and-zotero']) {
+			if (from === to) continue;
+			it(`preserves real PDF annotations when converting ${from} to ${to}`, async function () {
+				let attachment = attachments[0];
+				let originalID = Zotero.DataObjectUtilities.generateKey();
+				Zotero.Prefs.set('reader.annotations.storageMode', from);
+				await Zotero.AnnotationStorageCoordinator.applyChanges(attachment.id, {
+					upserts: [makeAnnotation(originalID, 'mode transition', 640)]
+				});
+				Zotero.Prefs.set('reader.annotations.storageMode', to);
+				let result = await Zotero.AnnotationStorageCoordinator.reconcile(attachment.id, 'mode-change');
+				assert.equal(result.effectiveMode, to);
+				assert.equal(result.appliedMode, to);
+				assert.lengthOf(result.conflicts, 0);
+				let pdf = await Zotero.PDFWorker.readAnnotations(attachment.id, true);
+				let embedded = pdf.annotations.filter(annotation => annotation.id);
+				let native = attachment.getAnnotations().filter(annotation => !annotation.annotationIsExternal);
+				assert.lengthOf(embedded, to === 'standard' ? 0 : 1);
+				assert.lengthOf(native, to === 'pdf-only' ? 0 : 1);
+				for (let annotation of embedded) assert.equal(annotation.comment, 'mode transition');
+				for (let annotation of native) assert.equal(annotation.annotationComment, 'mode transition');
+				if (to === 'pdf-and-zotero') assert.equal(embedded[0].id, native[0].key);
+				if (to === 'pdf-only') {
+					assert.notEqual(embedded[0].id, originalID, 'leaving database storage rotates identity');
+					assert.isNotOk(Zotero.Items.getByLibraryAndKey(attachment.libraryID, originalID));
+				}
+			});
+		}
+	}
+
+});
