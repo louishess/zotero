@@ -501,6 +501,23 @@ Zotero.Server.Connector.SaveAttachment.prototype = {
 			Zotero.debug("Can't find session " + sessionID, 1);
 			return [400, "application/json", JSON.stringify({ error: "SESSION_NOT_FOUND" })];
 		}
+
+		// saveItems is the automatic translator acquisition path. Ignore any
+		// client-supplied "automatic" flag so a translator cannot opt itself out
+		// of the Desktop policy. Explicit standalone saves use their own endpoint.
+		if (session._action === 'saveItems'
+				&& Zotero.AutomaticAttachmentDownloads
+				&& !Zotero.AutomaticAttachmentDownloads.shouldDownload({
+					contentType: requestData.headers['Content-Type'] || metadata.contentType,
+					filename: metadata.filename || metadata.title,
+					url: metadata.url,
+					automatic: true,
+				})) {
+			return [200, "application/json", JSON.stringify({
+				skipped: true,
+				reason: "automatic-download-disabled",
+			})];
+		}
 		
 		let { library } = Zotero.Server.Connector.getSaveTarget();
 		if (!library.filesEditable) {
@@ -708,6 +725,17 @@ Zotero.Server.Connector.SaveAttachmentFromResolver.prototype = {
 		if (!session) {
 			Zotero.debug("Can't find session " + data.sessionID, 1);
 			return [400, "application/json", JSON.stringify({ error: "SESSION_NOT_FOUND" })];
+		}
+		if (session._action === 'saveItems'
+				&& Zotero.AutomaticAttachmentDownloads
+				&& !Zotero.AutomaticAttachmentDownloads.shouldDownload({
+					contentType: 'application/pdf',
+					automatic: true,
+				})) {
+			return [200, "application/json", JSON.stringify({
+				skipped: true,
+				reason: "automatic-download-disabled",
+			})];
 		}
 		let item = session.getItemByConnectorKey(data.itemID);
 		let resolvers = Zotero.Attachments.getFileResolvers(item, ['oa', 'custom'], true);
@@ -1121,6 +1149,7 @@ Zotero.Server.Connector.Ping.prototype = {
 				prefs: {
 					automaticSnapshots: Zotero.Prefs.get('automaticSnapshots'),
 					downloadAssociatedFiles: Zotero.Prefs.get("downloadAssociatedFiles"),
+					automaticAttachmentDownloads: Zotero.AutomaticAttachmentDownloads?.getPolicy?.() || null,
 					translatorPrefsVersion: TRANSLATOR_PREFS_VERSION,
 					translatorPrefs,
 					supportsAttachmentUpload: true,

@@ -112,6 +112,11 @@ describe("Connector Server", function () {
 				assert.isTrue(data.prefs.translatorPrefs.attachSupplementary);
 				assert.equal(data.prefs.translatorPrefs['SIFix.testNumber'], 2);
 				assert.notProperty(data.prefs.translatorPrefs, 'downloadAssociatedFiles');
+				assert.equal(data.prefs.automaticAttachmentDownloads.version, 1);
+				assert.lengthOf(data.prefs.automaticAttachmentDownloads.types, 7);
+				assert.include(data.prefs.automaticAttachmentDownloads.genericMIMETypes,
+					'application/octet-stream');
+				assert.isTrue(data.prefs.automaticAttachmentDownloads.enabled.pdf);
 			}
 			finally {
 				Zotero.Prefs.set('translators.attachSupplementary', oldAttachSupplementary);
@@ -708,6 +713,57 @@ describe("Connector Server", function () {
 			let contents = await Zotero.File.getSample(path);
 			assert.equal(contents, pdfSample);
 		});
+
+		it("should return a skipped result without creating an attachment when its type is disabled", async function () {
+			let oldPDFEnabled = Zotero.Prefs.get('automaticAttachmentDownloads.pdf');
+			try {
+				Zotero.Prefs.set('automaticAttachmentDownloads.pdf', false);
+				const sessionID = Zotero.Utilities.randomString();
+				const itemID = Zotero.Utilities.randomString();
+				let response = await httpRequest(
+					'POST',
+					connectorServerPath + "/connector/saveItems",
+					{
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							sessionID,
+							items: [{ id: itemID, itemType: "journalArticle", title: "Policy test" }]
+						})
+					}
+				);
+				assert.equal(response.status, 201);
+				// The connector key is a session key, so locate the item from the session.
+				let session = Zotero.Server.Connector.SessionManager.get(sessionID);
+				let parent = session.getItemByConnectorKey(itemID);
+
+				response = await httpRequest(
+					'POST',
+					connectorServerPath + "/connector/saveAttachment",
+					{
+						headers: {
+							"Content-Type": "application/pdf",
+							"X-Metadata": JSON.stringify({
+								sessionID,
+								parentItemID: itemID,
+								title: "Blocked PDF",
+								url: `${testServerPath}/blocked.pdf`,
+								automatic: false,
+							})
+						},
+						body: pdfArrayBuffer
+					}
+				);
+				assert.equal(response.status, 200);
+				assert.deepEqual(JSON.parse(response.responseText), {
+					skipped: true,
+					reason: "automatic-download-disabled"
+				});
+				assert.equal(parent.numAttachments(), 0);
+			}
+			finally {
+				Zotero.Prefs.set('automaticAttachmentDownloads.pdf', oldPDFEnabled);
+			}
+		});
 	});
 
 	describe("/connector/hasAttachmentResolvers", function () {
@@ -955,6 +1011,52 @@ describe("Connector Server", function () {
 			}
 			finally {
 				stub.restore();
+			}
+		});
+
+		it("should skip automatic OA recovery when PDF downloads are disabled", async function () {
+			let oldPDFEnabled = Zotero.Prefs.get('automaticAttachmentDownloads.pdf');
+			let addFileFromURLs = sinon.stub(Zotero.Attachments, 'addFileFromURLs');
+			try {
+				Zotero.Prefs.set('automaticAttachmentDownloads.pdf', false);
+				const sessionID = Zotero.Utilities.randomString();
+				const itemID = Zotero.Utilities.randomString();
+				let response = await httpRequest(
+					"POST",
+					connectorServerPath + "/connector/saveItems",
+					{
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							sessionID,
+							items: [{
+								id: itemID,
+								itemType: "journalArticle",
+								title: "Resolver policy test",
+								DOI: "10.1234/policy-test"
+							}]
+						})
+					}
+				);
+				assert.equal(response.status, 201);
+
+				response = await httpRequest(
+					"POST",
+					connectorServerPath + "/connector/saveAttachmentFromResolver",
+					{
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ sessionID, itemID })
+					}
+				);
+				assert.equal(response.status, 200);
+				assert.deepEqual(JSON.parse(response.responseText), {
+					skipped: true,
+					reason: "automatic-download-disabled"
+				});
+				assert.isFalse(addFileFromURLs.called);
+			}
+			finally {
+				addFileFromURLs.restore();
+				Zotero.Prefs.set('automaticAttachmentDownloads.pdf', oldPDFEnabled);
 			}
 		});
 	});
