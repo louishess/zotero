@@ -85,9 +85,11 @@ npm ci
 npm run ftl-to-json
 npm run build
 ZOTERO_TEST=0 app/scripts/dir_build -p m -f
+codesign --force --deep --sign - --timestamp=none app/staging/Zotero.app
+codesign --verify --deep --strict app/staging/Zotero.app
 ```
 
-Desktop's builder downloads revision-specific reader/editor/worker assets or builds them locally. The custom worker was also built directly from source; `worker.js`, `metadata.json`, and `structured-document-text.js` matched the downloaded revision assets byte-for-byte. The packager verifies the configured Gecko runtime hash and signs the local app ad hoc. Verify staged content rather than copying an older application's `omni.ja`.
+Desktop's builder downloads revision-specific reader/editor/worker assets or builds them locally. The custom worker was also built directly from source; `worker.js`, `metadata.json`, and `structured-document-text.js` matched the downloaded revision assets byte-for-byte. The packager verifies the configured Gecko runtime hash and signs the Word integration library. Sign and verify the complete review app separately with the commands above. Verify staged content rather than copying an older application's `omni.ja`.
 
 The staged app is `app/staging/Zotero.app`. Retain this internal name and use a distinct enclosing artifact directory/archive to avoid overwriting installed or previous builds. The review build is not a notarized release. Do not launch it against the user's library merely to test packaging.
 
