@@ -1059,6 +1059,7 @@ Zotero_Preferences.Linked_Folder = {
 		let message = 'unavailable';
 		if (isOrganizer) message = 'local';
 		else if (unclaimed) message = 'unclaimed';
+		else if (['root-mismatch', 'invalid', 'conflict'].includes(status?.state)) message = status.state;
 		else if (status?.ownerID) message = 'remote';
 		this._setMessage(document.getElementById('linked-folder-organizer-status'),
 			`preferences-advanced-linked-folder-organizer-${message}`);

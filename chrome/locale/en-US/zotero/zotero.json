@@ -2024,6 +2024,15 @@
 	"preferences-advanced-linked-folder-organizer-unavailable": {
 		"string": "Organizer status is unavailable. Check the folder and its ownership records."
 	},
+	"preferences-advanced-linked-folder-organizer-root-mismatch": {
+		"string": "This folder no longer matches this computer’s enrollment. Restore the original folder and its ownership records, or select the intended Linked Attachment Base Directory above. Migration is stopped."
+	},
+	"preferences-advanced-linked-folder-organizer-invalid": {
+		"string": "The folder’s ownership records cannot be verified. Restore those records from a known working copy before enrolling an organizer. Migration is stopped."
+	},
+	"preferences-advanced-linked-folder-organizer-conflict": {
+		"string": "Conflicting ownership records were found. Pause organization on all computers and review the conflict copies in your cloud folder before continuing. Migration is stopped."
+	},
 	"preferences-advanced-linked-folder-release-title": {
 		"string": "Release Organizer Role?"
 	},

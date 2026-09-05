@@ -332,6 +332,14 @@ describe("Advanced Preferences", function () {
 				await pane.updateUI();
 				assert.isTrue(doc.getElementById('linked-folder-start-migration').disabled);
 				assert.isTrue(doc.getElementById('linked-folder-claim-organizer').disabled);
+				for (let state of ['root-mismatch', 'invalid', 'conflict']) {
+					manager.getOrganizerStatus.resolves({ state, isOrganizer: false, ownerID: 'local' });
+					await pane.updateUI();
+					assert.equal(doc.getElementById('linked-folder-organizer-status').getAttribute('data-l10n-id'),
+						`preferences-advanced-linked-folder-organizer-${state}`);
+					assert.isTrue(doc.getElementById('linked-folder-start-migration').disabled);
+					assert.isTrue(doc.getElementById('linked-folder-claim-organizer').disabled);
+				}
 			});
 
 			it("shows retained files and delegates review actions without deleting on refresh", async function () {
