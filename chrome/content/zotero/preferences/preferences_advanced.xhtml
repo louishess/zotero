@@ -142,7 +142,123 @@
 					oncommand="Zotero_Preferences.Attachment_Base_Directory.clearPath()"
 					data-search-strings="attachmentBasePath.clearBasePath.message"/>
 			</hbox>
-			
+
+			<separator class="linked-folder-separator"/>
+			<checkbox
+				id="linked-folder-attachments-enabled"
+				preference="extensions.zotero.linkedFolderAttachments.enabled"
+				native="true"
+				data-l10n-id="preferences-advanced-linked-folder-enabled"
+				aria-describedby="linked-folder-attachments-description"
+			/>
+			<description
+				id="linked-folder-attachments-description"
+				data-l10n-id="preferences-advanced-linked-folder-description"
+			/>
+
+			<vbox id="linked-folder-attachments-controls">
+				<hbox align="center" class="linked-folder-provider-row">
+					<label
+						id="linked-folder-provider-label"
+						control="linked-folder-provider"
+						data-l10n-id="preferences-advanced-linked-folder-provider"
+					/>
+					<menulist
+						id="linked-folder-provider"
+						preference="extensions.zotero.linkedFolderAttachments.provider"
+						native="true"
+						disabled="true"
+						aria-describedby="linked-folder-availability-guidance"
+						>
+						<menupopup>
+							<menuitem value="box-drive" data-l10n-id="preferences-advanced-linked-folder-provider-box-drive"/>
+							<menuitem value="dropbox" data-l10n-id="preferences-advanced-linked-folder-provider-dropbox"/>
+							<menuitem value="google-drive" data-l10n-id="preferences-advanced-linked-folder-provider-google-drive"/>
+							<menuitem value="local-folder" data-l10n-id="preferences-advanced-linked-folder-provider-local-folder"/>
+						</menupopup>
+					</menulist>
+				</hbox>
+				<description
+					id="linked-folder-availability-guidance"
+					data-l10n-id="preferences-advanced-linked-folder-available-offline"
+				/>
+				<description
+					id="linked-folder-root-status"
+					role="status"
+					aria-live="polite"
+				/>
+
+				<description id="linked-folder-organizer-status" role="status" aria-live="polite"/>
+				<hbox class="preferences-button-group">
+					<button id="linked-folder-claim-organizer" disabled="true"
+						data-l10n-id="preferences-advanced-linked-folder-claim-organizer"
+						oncommand="Zotero_Preferences.Linked_Folder.claimOrganizer()"/>
+					<button id="linked-folder-release-organizer" disabled="true"
+						data-l10n-id="preferences-advanced-linked-folder-release-organizer"
+						oncommand="Zotero_Preferences.Linked_Folder.releaseOrganizer()"/>
+				</hbox>
+				<hbox class="preferences-button-group">
+					<button
+						id="linked-folder-preview-migration"
+						data-l10n-id="preferences-advanced-linked-folder-preview"
+						disabled="true"
+						oncommand="Zotero_Preferences.Linked_Folder.previewMigration()"
+					/>
+					<button
+						id="linked-folder-start-migration"
+						data-l10n-id="preferences-advanced-linked-folder-start"
+						disabled="true"
+						oncommand="Zotero_Preferences.Linked_Folder.startMigration()"
+					/>
+				</hbox>
+				<description
+					id="linked-folder-preview-summary"
+					role="status"
+					aria-live="polite"
+					hidden="true"
+				/>
+
+				<vbox
+					id="linked-folder-migration-progress"
+					role="status"
+					aria-live="polite"
+				>
+					<description id="linked-folder-migration-summary"/>
+					<html:ul id="linked-folder-job-details"
+						data-l10n-id="preferences-advanced-linked-folder-job-details"/>
+
+					<progressmeter id="linked-folder-migration-progressmeter" max="100" value="0"/>
+					<hbox class="preferences-button-group">
+						<button
+							id="linked-folder-pause-migration"
+							data-l10n-id="preferences-advanced-linked-folder-pause"
+							disabled="true"
+							oncommand="Zotero_Preferences.Linked_Folder.pauseMigration()"
+						/>
+						<button
+							id="linked-folder-resume-migration"
+							data-l10n-id="preferences-advanced-linked-folder-resume"
+							disabled="true"
+							oncommand="Zotero_Preferences.Linked_Folder.resumeMigration()"
+						/>
+						<button
+							id="linked-folder-retry-migration"
+							data-l10n-id="preferences-advanced-linked-folder-retry"
+							disabled="true"
+							oncommand="Zotero_Preferences.Linked_Folder.retryMigration()"
+						/>
+					</hbox>
+				</vbox>
+			</vbox>
+
+			<vbox id="linked-folder-orphan-review">
+				<label data-l10n-id="preferences-advanced-linked-folder-orphans-heading"/>
+				<description data-l10n-id="preferences-advanced-linked-folder-orphans-description"/>
+				<button id="linked-folder-review-orphans"
+					data-l10n-id="preferences-advanced-linked-folder-review-orphans"
+					oncommand="Zotero_Preferences.Linked_Folder.updateOrphanReview()"/>
+				<html:ul id="linked-folder-orphans"/>
+			</vbox>
 		</groupbox>
 		
 		<groupbox aria-label="&zotero.preferences.dataDir;">

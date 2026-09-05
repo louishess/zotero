@@ -241,6 +241,48 @@
 		</groupbox>
 	</vbox>
 
+	<vbox class="main-section" id="automatic-attachment-downloads-section">
+		<html:h1 id="automatic-attachment-downloads-heading"
+			data-l10n-id="preferences-automatic-attachment-downloads-heading"/>
+		<description id="automatic-attachment-downloads-description"
+			data-l10n-id="preferences-automatic-attachment-downloads-description"/>
+		<groupbox
+			aria-labelledby="automatic-attachment-downloads-heading"
+			aria-describedby="automatic-attachment-downloads-description"
+			role="group">
+			<vbox>
+				<checkbox id="automatic-download-type-pdf"
+					data-l10n-id="preferences-automatic-attachment-download-type-pdf"
+					preference="extensions.zotero.automaticAttachmentDownloads.pdf"
+					native="true"/>
+				<checkbox id="automatic-download-type-docx"
+					data-l10n-id="preferences-automatic-attachment-download-type-docx"
+					preference="extensions.zotero.automaticAttachmentDownloads.docx"
+					native="true"/>
+				<checkbox id="automatic-download-type-md"
+					data-l10n-id="preferences-automatic-attachment-download-type-md"
+					preference="extensions.zotero.automaticAttachmentDownloads.md"
+					native="true"/>
+				<checkbox id="automatic-download-type-xlsx"
+					data-l10n-id="preferences-automatic-attachment-download-type-xlsx"
+					preference="extensions.zotero.automaticAttachmentDownloads.xlsx"
+					native="true"/>
+				<checkbox id="automatic-download-type-mp3"
+					data-l10n-id="preferences-automatic-attachment-download-type-mp3"
+					preference="extensions.zotero.automaticAttachmentDownloads.mp3"
+					native="true"/>
+				<checkbox id="automatic-download-type-mp4"
+					data-l10n-id="preferences-automatic-attachment-download-type-mp4"
+					preference="extensions.zotero.automaticAttachmentDownloads.mp4"
+					native="true"/>
+				<checkbox id="automatic-download-type-webm"
+					data-l10n-id="preferences-automatic-attachment-download-type-webm"
+					preference="extensions.zotero.automaticAttachmentDownloads.webm"
+					native="true"/>
+			</vbox>
+		</groupbox>
+	</vbox>
+
 	<vbox class="main-section" id="sync-reset" align="start" aria-label="&zotero.preferences.sync.reset;" role="group">
 		<html:h1 data-l10n-id="preferences-sync-reset-heading"/>
 		<button label="&zotero.preferences.sync.reset.showResetOptions;" oncommand="Zotero_Preferences.navigateToPane('zotero-subpane-reset-sync')"

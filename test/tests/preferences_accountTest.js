@@ -13,6 +13,31 @@ describe("Account Preferences", function () {
 		win.close();
 	});
 
+	describe("Automatic Attachment Downloads", function () {
+		const types = ['pdf', 'docx', 'md', 'xlsx', 'mp3', 'mp4', 'webm'];
+		afterEach(function () {
+			for (let type of types) Zotero.Prefs.clear(`automaticAttachmentDownloads.${type}`);
+		});
+
+		it("keeps independent device-local controls available without a sync login", async function () {
+			let section = doc.getElementById('automatic-attachment-downloads-section');
+			assert.isFalse(section.hidden);
+			assert.equal(section.querySelector('groupbox').getAttribute('role'), 'group');
+			for (let type of types) {
+				let control = doc.getElementById(`automatic-download-type-${type}`);
+				assert.isTrue(control.checked, type);
+				assert.isFalse(control.disabled, type);
+			}
+			Zotero.Prefs.set('automaticAttachmentDownloads.pdf', false);
+			let pdf = doc.getElementById('automatic-download-type-pdf');
+			await waitForCallback(() => !pdf.checked, 20, 10);
+			assert.isTrue(doc.getElementById('automatic-download-type-xlsx').checked);
+			pdf.checked = true;
+			pdf.dispatchEvent(new win.Event('command', { bubbles: true }));
+			await waitForCallback(() => Zotero.Prefs.get('automaticAttachmentDownloads.pdf'), 20, 10);
+		});
+	});
+
 	describe("Settings", function () {
 		describe("Data Syncing", function () {
 			var createLoginSessionStub, checkLoginSessionStub, deleteAPIKey, launchURLStub,

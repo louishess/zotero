@@ -53,6 +53,7 @@ Subagent handoff: changed files, interface changes, tests actually run and resul
 - Cloud seed: original annotation checkout commit `e8bd987d02` plus later uncommitted safety corrections must be reviewed as source inputs, not blindly cherry-picked.
 - Download seed: relevant uncommitted source/tests in sibling `ZoteroAutomaticDownloads`; exclude materialized LFS updater binaries and regenerate Fluent output.
 - Supervisor integrated shared cloud/download UI and startup seeds; implementation and integration tests are in progress.
+- UI milestone: added organizer enrollment/status, retained-file review, all-format cloud descriptions and seven download settings. Settings suite passed 23/23; after correcting pane-unload cleanup, Advanced Settings recheck passed 14/14 with no dead-object errors. The old cloud seed still produced SQL LIKE errors in that snapshot; engine corrections and final combined rerun are pending. Evidence: sibling `combined-review/zoteromerge-settings-lifecycle-tests.log`.
 - 2026-09-05 worker baseline validation: `npm run typecheck` passed; `npm run test:pdf` passed 188/188. Evidence: sibling `combined-review/zoteromerge-worker-tests.log`. Worker source remains pinned to `731026106dabe56aef921351b7c3480678ee25fc`.
 - User confirmed no second Mac is currently available; Dropbox and Google Drive folders are not yet configured. These real-provider/two-Mac gates remain pending. Do not substitute simulations for them or mark the full goal complete.
 

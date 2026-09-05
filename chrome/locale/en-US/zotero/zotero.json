@@ -1814,6 +1814,69 @@
 	"preferences-advanced-pdf-annotations-transition-warning": {
 		"string": "This change will remove one stored representation after verifying the replacement. Annotations remain available in the selected storage mode."
 	},
+	"preferences-advanced-linked-folder-enabled.label": {
+		"string": "Organize article attachments in a cloud folder"
+	},
+	"preferences-advanced-linked-folder-description": {
+		"string": "Uses the Linked Attachment Base Directory above. Main files and supporting information for personal-library journal articles share stable ACS citation folders. Enroll one computer as the organizer; other computers sync, read, and annotate the files."
+	},
+	"preferences-advanced-linked-folder-provider": {
+		"string": "Folder provider:"
+	},
+	"preferences-advanced-linked-folder-provider-box-drive.label": {
+		"string": "Box Drive"
+	},
+	"preferences-advanced-linked-folder-provider-dropbox.label": {
+		"string": "Dropbox"
+	},
+	"preferences-advanced-linked-folder-provider-google-drive.label": {
+		"string": "Google Drive"
+	},
+	"preferences-advanced-linked-folder-provider-local-folder.label": {
+		"string": "Local folder"
+	},
+	"preferences-advanced-linked-folder-available-offline": {
+		"string": "Keep this folder and its files available offline in your provider’s desktop app before starting or resuming migration."
+	},
+	"preferences-advanced-linked-folder-status-disabled": {
+		"string": "Cloud folder organization is off."
+	},
+	"preferences-advanced-linked-folder-status-root-required": {
+		"string": "Select a Linked Attachment Base Directory before enabling migration."
+	},
+	"preferences-advanced-linked-folder-status-root-valid": {
+		"string": "The linked attachment folder is available."
+	},
+	"preferences-advanced-linked-folder-status-root-invalid": {
+		"string": "The linked attachment folder is unavailable or is not valid for the selected provider."
+	},
+	"preferences-advanced-linked-folder-preview.label": {
+		"string": "Preview Migration"
+	},
+	"preferences-advanced-linked-folder-start.label": {
+		"string": "Start Migration"
+	},
+	"preferences-advanced-linked-folder-pause.label": {
+		"string": "Pause"
+	},
+	"preferences-advanced-linked-folder-resume.label": {
+		"string": "Resume"
+	},
+	"preferences-advanced-linked-folder-retry.label": {
+		"string": "Retry Failed"
+	},
+	"preferences-advanced-linked-folder-status-manager-unavailable": {
+		"string": "Migration controls will be available after the linked folder manager loads."
+	},
+	"preferences-advanced-linked-folder-preview-summary": {
+		"string": "{ eligible } eligible ({ size }); { skipped } skipped. No files have been moved."
+	},
+	"preferences-advanced-linked-folder-progress-summary": {
+		"string": "{ completed } of { total } completed; { pending } pending; { active } active; { failed } failed; { deferred } deferred."
+	},
+	"preferences-advanced-linked-folder-status-error": {
+		"string": "Migration status unavailable: { message }"
+	},
 	"preferences-advanced-data-dir.value": {
 		"string": "Data Directory:"
 	},
@@ -1852,6 +1915,33 @@
 	},
 	"preferences-sync-fileSyncing-tos": {
 		"string": "By using { app-name } Storage, you agree to become bound by its <label data-l10n-name=\"terms-link\">terms and conditions</label>."
+	},
+	"preferences-automatic-attachment-downloads-heading": {
+		"string": "Automatic Attachment Downloads"
+	},
+	"preferences-automatic-attachment-downloads-description": {
+		"string": "Choose which attachment types { app-name } may download automatically. Opening or explicitly downloading a file is always allowed."
+	},
+	"preferences-automatic-attachment-download-type-pdf.label": {
+		"string": "PDF (.pdf)"
+	},
+	"preferences-automatic-attachment-download-type-docx.label": {
+		"string": "Word document (.docx)"
+	},
+	"preferences-automatic-attachment-download-type-md.label": {
+		"string": "Markdown (.md)"
+	},
+	"preferences-automatic-attachment-download-type-xlsx.label": {
+		"string": "Excel workbook (.xlsx)"
+	},
+	"preferences-automatic-attachment-download-type-mp3.label": {
+		"string": "MP3 audio (.mp3)"
+	},
+	"preferences-automatic-attachment-download-type-mp4.label": {
+		"string": "MP4 video (.mp4)"
+	},
+	"preferences-automatic-attachment-download-type-webm.label": {
+		"string": "WebM video (.webm)"
 	},
 	"preferences-account-log-out.label": {
 		"string": "Log Out…"
@@ -1915,6 +2005,63 @@
 	},
 	"fulltext-stats-notes-indexed": {
 		"string": "Notes indexed:"
+	},
+	"preferences-advanced-linked-folder-claim-organizer.label": {
+		"string": "Use This Computer as Organizer"
+	},
+	"preferences-advanced-linked-folder-release-organizer.label": {
+		"string": "Release Organizer Role"
+	},
+	"preferences-advanced-linked-folder-organizer-local": {
+		"string": "This computer organizes attachments. Other computers can sync, read, and annotate them."
+	},
+	"preferences-advanced-linked-folder-organizer-remote": {
+		"string": "Another computer organizes this folder. Release its organizer role there before claiming it here."
+	},
+	"preferences-advanced-linked-folder-organizer-unclaimed": {
+		"string": "No organizer is enrolled. Choose one computer to organize this folder."
+	},
+	"preferences-advanced-linked-folder-organizer-unavailable": {
+		"string": "Organizer status is unavailable. Check the folder and its ownership records."
+	},
+	"preferences-advanced-linked-folder-release-title": {
+		"string": "Release Organizer Role?"
+	},
+	"preferences-advanced-linked-folder-release-description": {
+		"string": "New conversions will stop on this computer. Wait for your cloud app to sync the ownership change before enrolling another computer."
+	},
+	"preferences-advanced-linked-folder-job-details.aria-label": {
+		"string": "Attachments waiting or requiring attention"
+	},
+	"preferences-advanced-linked-folder-job-detail": {
+		"string": "{ name }: { state }. { message }"
+	},
+	"preferences-advanced-linked-folder-orphans-heading": {
+		"string": "Files Retained After Deletion"
+	},
+	"preferences-advanced-linked-folder-orphans-description": {
+		"string": "These files were retained after their Zotero items were deleted. Review them before removing cloud files."
+	},
+	"preferences-advanced-linked-folder-review-orphans.label": {
+		"string": "Refresh Retained Files"
+	},
+	"preferences-advanced-linked-folder-orphans-empty": {
+		"string": "No retained files require review."
+	},
+	"preferences-advanced-linked-folder-orphan-reveal": {
+		"string": "Show File"
+	},
+	"preferences-advanced-linked-folder-orphan-retain": {
+		"string": "Keep File"
+	},
+	"preferences-advanced-linked-folder-orphan-dismiss": {
+		"string": "Dismiss from Review"
+	},
+	"preferences-advanced-linked-folder-orphan-trash": {
+		"string": "Move to Trash…"
+	},
+	"preferences-advanced-linked-folder-orphan-retained-error": {
+		"string": "The file was retained. Verify that this computer is the organizer, the folder is available, and the file has not changed since it was recorded."
 	},
 	"scaffold-translator-output.aria-label": {
 		"string": "Console"

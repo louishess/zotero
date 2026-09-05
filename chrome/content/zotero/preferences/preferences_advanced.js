@@ -48,8 +48,12 @@ Zotero_Preferences.Advanced = {
 		}
 		
 		document.getElementById('baseAttachmentPath').addEventListener('syncfrompreference',
-			() => Zotero_Preferences.Attachment_Base_Directory.updateUI());
-		
+			() => {
+				Zotero_Preferences.Attachment_Base_Directory.updateUI();
+				Zotero_Preferences.Linked_Folder.updateUI();
+			});
+		Zotero_Preferences.Linked_Folder.init();
+
 		this.onDataDirLoad();
 
 		this.updateIndexStats();
@@ -784,6 +788,390 @@ Zotero_Preferences.Attachment_Base_Directory = {
 			filefield.value = '';
 		}
 		document.getElementById('resetBasePath').disabled = !path;
+	}
+};
+
+
+Zotero_Preferences.Linked_Folder = {
+	_statusTimer: null,
+	_validationSequence: 0,
+	_managerAvailable: null,
+	_rootValid: false,
+	_statusUpdating: false,
+	_closed: false,
+
+	init() {
+		for (let id of ['linked-folder-attachments-enabled', 'linked-folder-provider']) {
+			let element = document.getElementById(id);
+			element.addEventListener('syncfrompreference', () => this.updateUI());
+			element.addEventListener('synctopreference', () => this.updateUI());
+		}
+		// Preferences dispatches unload on the pane before destroying its sandbox.
+		document.getElementById('zotero-prefpane-advanced').addEventListener('unload', () => {
+			this._closed = true;
+			this._stopStatusPolling();
+		}, { once: true });
+		this.updateUI();
+		this._statusTimer = setInterval(() => this.updateMigrationStatus(), 1000);
+		this.updateOrphanReview();
+	},
+
+	_getManager() {
+		return Zotero.LinkedFolderAttachmentManager || null;
+	},
+
+	_getProvider(providerID) {
+		let providers = Zotero.LinkedFolderProviders;
+		return typeof providers?.get == 'function' ? providers.get(providerID) : null;
+	},
+
+	_getLibraryID() {
+		return Zotero.Libraries.userLibraryID;
+	},
+
+	_setMessage(element, l10nID, args) {
+		element.removeAttribute('data-l10n-id');
+		document.l10n.setAttributes(element, l10nID, args);
+	},
+
+	async updateUI() {
+		if (this._closed || window.closed) return;
+		let enabled = Zotero.Prefs.get('linkedFolderAttachments.enabled');
+		let manager = this._getManager();
+		this._managerAvailable = !!manager;
+		let providerMenu = document.getElementById('linked-folder-provider');
+		providerMenu.disabled = !enabled;
+		document.getElementById('linked-folder-preview-summary').hidden = true;
+
+		let validRoot = await this._validateRoot(enabled);
+		if (this._closed || window.closed) return;
+		this._rootValid = validRoot;
+		let canMigrate = enabled && validRoot;
+		document.getElementById('linked-folder-preview-migration').disabled = !canMigrate
+			|| typeof manager?.previewMigration != 'function';
+		document.getElementById('linked-folder-start-migration').disabled = !canMigrate
+			|| typeof manager?.queueLibraryMigration != 'function';
+		this._updateAvailabilityGuidance(providerMenu.value);
+		await this.updateMigrationStatus();
+	},
+
+	async _validateRoot(enabled) {
+		let sequence = ++this._validationSequence;
+		let statusElement = document.getElementById('linked-folder-root-status');
+		statusElement.dataset.state = 'neutral';
+		if (!enabled) {
+			this._setMessage(statusElement, 'preferences-advanced-linked-folder-status-disabled');
+			return false;
+		}
+
+		let rootPath = Zotero.Prefs.get('baseAttachmentPath');
+		if (!rootPath) {
+			statusElement.dataset.state = 'error';
+			this._setMessage(statusElement, 'preferences-advanced-linked-folder-status-root-required');
+			return false;
+		}
+
+		try {
+			let providerID = Zotero.Prefs.get('linkedFolderAttachments.provider');
+			let manager = this._getManager();
+			let provider = this._getProvider(providerID);
+			let result;
+			if (typeof manager?.validateRoot == 'function') {
+				result = await manager.validateRoot(providerID, rootPath);
+			}
+			else if (typeof provider?.validateRoot == 'function') {
+				result = await provider.validateRoot(rootPath);
+			}
+			else {
+				// A readable directory alone does not establish safe migration capability.
+				result = false;
+			}
+			if (this._closed || window.closed || sequence != this._validationSequence) return false;
+
+			let valid = typeof result == 'object' ? result.valid : result === true;
+			statusElement.dataset.state = valid ? 'success' : 'error';
+			if (typeof result == 'object' && result.message) {
+				statusElement.removeAttribute('data-l10n-id');
+				statusElement.textContent = result.message;
+			}
+			else {
+				this._setMessage(statusElement, valid
+					? 'preferences-advanced-linked-folder-status-root-valid'
+					: 'preferences-advanced-linked-folder-status-root-invalid');
+			}
+			return valid;
+		}
+		catch (e) {
+			if (this._closed || window.closed || sequence != this._validationSequence) return false;
+			Zotero.debug(e, 2);
+			statusElement.dataset.state = 'error';
+			this._setMessage(statusElement, 'preferences-advanced-linked-folder-status-root-invalid');
+			return false;
+		}
+	},
+
+	_updateAvailabilityGuidance(providerID) {
+		let element = document.getElementById('linked-folder-availability-guidance');
+		let hint = this._getProvider(providerID)?.availabilityHint;
+		if (hint) {
+			element.removeAttribute('data-l10n-id');
+			element.textContent = hint;
+			return;
+		}
+		this._setMessage(element, 'preferences-advanced-linked-folder-available-offline');
+	},
+
+	async _runAction(method) {
+		let manager = this._getManager();
+		if (!manager || typeof manager[method] != 'function') {
+			await this.updateMigrationStatus();
+			return null;
+		}
+		let summary = document.getElementById('linked-folder-migration-summary');
+		try {
+			if (typeof manager.init == 'function') await manager.init();
+			let result = await manager[method](this._getLibraryID());
+			await this.updateMigrationStatus();
+			return result;
+		}
+		catch (e) {
+			Zotero.logError(e);
+			if (this._closed || window.closed) return null;
+			this._setMessage(summary, 'preferences-advanced-linked-folder-status-error', {
+				message: e.message || String(e)
+			});
+			return null;
+		}
+	},
+
+	async previewMigration() {
+		let preview = await this._runAction('previewMigration');
+		if (!preview || this._closed || window.closed) return;
+		let eligible = preview.count ?? preview.eligible ?? preview.total ?? preview.queued ?? 0;
+		let skipped = preview.skipped ?? preview.ineligible ?? 0;
+		let bytes = preview.bytes ?? 0;
+		let units = ['B', 'KB', 'MB', 'GB', 'TB'];
+		let unit = 0;
+		let sizeValue = bytes;
+		while (sizeValue >= 1024 && unit < units.length - 1) {
+			sizeValue /= 1024;
+			unit++;
+		}
+		let size = `${sizeValue.toLocaleString(undefined, {
+			maximumFractionDigits: unit ? 1 : 0
+		})} ${units[unit]}`;
+		let previewSummary = document.getElementById('linked-folder-preview-summary');
+		previewSummary.hidden = false;
+		this._setMessage(
+			previewSummary,
+			'preferences-advanced-linked-folder-preview-summary',
+			{ eligible, skipped, size }
+		);
+	},
+
+	async startMigration() {
+		document.getElementById('linked-folder-preview-summary').hidden = true;
+		await this._runAction('queueLibraryMigration');
+	},
+
+	async pauseMigration() {
+		await this._runAction('pause');
+	},
+
+	async resumeMigration() {
+		await this._runAction('resume');
+	},
+
+	async retryMigration() {
+		await this._runAction('retryFailed');
+	},
+
+	async updateMigrationStatus() {
+		if (this._closed || window.closed || this._statusUpdating) return;
+		let manager = this._getManager();
+		if (this._managerAvailable !== !!manager) {
+			await this.updateUI();
+			return;
+		}
+		let summary = document.getElementById('linked-folder-migration-summary');
+		let progress = document.getElementById('linked-folder-migration-progressmeter');
+		let pause = document.getElementById('linked-folder-pause-migration');
+		let resume = document.getElementById('linked-folder-resume-migration');
+		let retry = document.getElementById('linked-folder-retry-migration');
+		if (!manager || typeof manager.getMigrationStatus != 'function') {
+			this._setMessage(summary, 'preferences-advanced-linked-folder-status-manager-unavailable');
+			progress.value = 0;
+			pause.disabled = resume.disabled = retry.disabled = true;
+			return;
+		}
+
+		this._statusUpdating = true;
+		try {
+			await this.updateOrganizerStatus();
+			let status = await manager.getMigrationStatus(this._getLibraryID()) || {};
+			if (this._closed || window.closed) return;
+			let counts = status.counts || {};
+			let total = status.total ?? counts.total ?? counts.eligible ?? 0;
+			let completed = status.complete ?? status.completed
+				?? counts.complete ?? counts.completed ?? counts.migrated ?? 0;
+			let pending = status.waiting ?? status.pending
+				?? counts.waiting ?? counts.pending ?? counts.queued ?? 0;
+			let active = status.active
+				?? counts.active ?? counts.moving ?? counts.inProgress ?? 0;
+			let failed = status.failed ?? counts.failed ?? 0;
+			let deferred = status.deferred ?? counts.deferred ?? 0;
+			this._setMessage(summary, 'preferences-advanced-linked-folder-progress-summary', {
+				completed, total, pending, active, failed, deferred
+			});
+			progress.value = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
+			let hasWork = pending + active > 0;
+			pause.disabled = !hasWork || !!status.paused || typeof manager.pause != 'function';
+			resume.disabled = !status.paused || typeof manager.resume != 'function';
+			retry.disabled = failed == 0 || typeof manager.retryFailed != 'function';
+			this.renderJobDetails(status.jobs || []);
+		}
+		catch (e) {
+			Zotero.debug(e, 2);
+			if (this._closed || window.closed) return;
+			this._setMessage(summary, 'preferences-advanced-linked-folder-status-error', {
+				message: e.message || String(e)
+			});
+			pause.disabled = resume.disabled = retry.disabled = true;
+		}
+		finally {
+			this._statusUpdating = false;
+		}
+	},
+
+	async updateOrganizerStatus() {
+		let manager = this._getManager();
+		let status = null;
+		try {
+			status = await manager?.getOrganizerStatus?.();
+		}
+		catch (e) {
+			Zotero.debug(e, 2);
+		}
+		if (this._closed || window.closed) return;
+		let enabled = Zotero.Prefs.get('linkedFolderAttachments.enabled');
+		let isOrganizer = !!status?.isOrganizer;
+		let unclaimed = status?.state === 'unclaimed';
+		let message = 'unavailable';
+		if (isOrganizer) message = 'local';
+		else if (unclaimed) message = 'unclaimed';
+		else if (status?.ownerID) message = 'remote';
+		this._setMessage(document.getElementById('linked-folder-organizer-status'),
+			`preferences-advanced-linked-folder-organizer-${message}`);
+		document.getElementById('linked-folder-claim-organizer').disabled
+			= !enabled || !this._rootValid || !unclaimed;
+		document.getElementById('linked-folder-release-organizer').disabled = !isOrganizer;
+		document.getElementById('linked-folder-start-migration').disabled
+			= !enabled || !this._rootValid || !isOrganizer;
+	},
+
+	async claimOrganizer() {
+		try {
+			await this._getManager()?.claimOrganizer();
+			await this.updateUI();
+		}
+		catch (e) {
+			this._showActionError(e);
+		}
+	},
+
+	async releaseOrganizer() {
+		let [title, message] = await document.l10n.formatValues([
+			{ id: 'preferences-advanced-linked-folder-release-title' },
+			{ id: 'preferences-advanced-linked-folder-release-description' },
+		]);
+		if (!Services.prompt.confirm(window, title, message)) return;
+		try {
+			await this._getManager()?.releaseOrganizer();
+			await this.updateUI();
+		}
+		catch (e) {
+			this._showActionError(e);
+		}
+	},
+
+	_showActionError(error) {
+		Zotero.logError(error);
+		if (this._closed || window.closed) return;
+		this._setMessage(document.getElementById('linked-folder-migration-summary'),
+			'preferences-advanced-linked-folder-status-error', { message: error.message || String(error) });
+	},
+
+	renderJobDetails(jobs) {
+		let list = document.getElementById('linked-folder-job-details');
+		let attention = jobs.filter(job => job.waitReason || job.lastError || job.phase === 'conflict');
+		// Avoid replacing an unchanged list every second while it is being read.
+		let signature = JSON.stringify(attention);
+		if (list.dataset.signature === signature) return;
+		list.dataset.signature = signature;
+		list.replaceChildren();
+		for (let job of attention) {
+			let row = document.createElementNS('http://www.w3.org/1999/xhtml', 'li');
+			this._setMessage(row, 'preferences-advanced-linked-folder-job-detail', {
+				name: job.targetFilename || job.sourceKey,
+				state: job.waitReason || job.phase,
+				message: job.lastError || '',
+			});
+			list.append(row);
+		}
+		list.hidden = !attention.length;
+	},
+
+	async updateOrphanReview() {
+		let manager = this._getManager();
+		let list = document.getElementById('linked-folder-orphans');
+		if (!manager?.getOrphans || !list) return;
+		try {
+			let records = (await manager.getOrphans(this._getLibraryID()))
+				.filter(record => !['retained', 'dismissed'].includes(record.state));
+			if (this._closed || window.closed) return;
+			list.replaceChildren();
+			if (!records.length) {
+				let row = document.createElementNS('http://www.w3.org/1999/xhtml', 'li');
+				this._setMessage(row, 'preferences-advanced-linked-folder-orphans-empty');
+				list.append(row);
+			}
+			for (let record of records) {
+				let row = document.createElementNS('http://www.w3.org/1999/xhtml', 'li');
+				let label = document.createElementNS('http://www.w3.org/1999/xhtml', 'span');
+				label.textContent = `${record.relativePath} — ${record.reason || ''}`;
+				row.append(label);
+				for (let action of ['reveal', 'retain', 'dismiss', 'trash']) {
+					let button = document.createElementNS('http://www.w3.org/1999/xhtml', 'button');
+					button.type = 'button';
+					this._setMessage(button, `preferences-advanced-linked-folder-orphan-${action}`);
+					button.addEventListener('click', async () => {
+						button.disabled = true;
+						try {
+							let result = await manager.reviewOrphan(record.libraryID, record.attachmentKey, action);
+							if (action === 'trash' && !result.trashed && result.reason !== 'cancelled') {
+								this._setMessage(document.getElementById('linked-folder-migration-summary'),
+									'preferences-advanced-linked-folder-orphan-retained-error');
+							}
+							await this.updateOrphanReview();
+						}
+						catch (e) {
+							this._showActionError(e);
+							button.disabled = false;
+						}
+					});
+					row.append(button);
+				}
+				list.append(row);
+			}
+		}
+		catch (e) {
+			this._showActionError(e);
+		}
+	},
+
+	_stopStatusPolling() {
+		if (this._statusTimer) clearInterval(this._statusTimer);
+		this._statusTimer = null;
 	}
 };
 
