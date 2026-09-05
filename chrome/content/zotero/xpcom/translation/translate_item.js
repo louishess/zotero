@@ -35,6 +35,8 @@
  *         <li>forceTagType - Force tags to specified tag type</li>
  *         <li>proxy - A proxy to deproxify item URLs</li>
  *         <li>baseURI - URI to which attachment paths should be relative</li>
+ *         <li>automatic - Whether downloaded attachments are automatic (default true)</li>
+ *         <li>force - Whether the download should bypass automatic type controls</li>
  *         <li>saveOptions - Options to pass to DataObject::save() (e.g., skipSelect)</li>
  */
 Zotero.Translate.ItemSaver = function (options) {
@@ -55,6 +57,8 @@ Zotero.Translate.ItemSaver = function (options) {
 	                      Zotero.Translate.ItemSaver.ATTACHMENT_MODE_IGNORE;
 	this._linkFiles = options.linkFiles;
 	this._forceTagType = options.forceTagType;
+	this._automatic = options.automatic !== false;
+	this._force = options.force === true;
 	this._referrer = options.referrer;
 	this._proxy = options.proxy;
 	this._itemToJSONItem = new Map();
@@ -151,7 +155,8 @@ Zotero.Translate.ItemSaver.prototype = {
 
 		// TODO: Separate pref?
 		var shouldDownloadOAPDF = this.attachmentMode == Zotero.Translate.ItemSaver.ATTACHMENT_MODE_DOWNLOAD
-			&& Zotero.Prefs.get('downloadAssociatedFiles');
+			&& Zotero.Prefs.get('downloadAssociatedFiles')
+			&& this._shouldDownload({ contentType: 'application/pdf' });
 		if (shouldDownloadOAPDF) {
 			for (let item of items) {
 				let urlObjects = await this._getOpenAccessPDFURLs(item, attachmentCallback);
@@ -575,6 +580,14 @@ Zotero.Translate.ItemSaver.prototype = {
 						Zotero.debug("Translate: Not adding attachment: automatic file attachments are disabled");
 						return false;
 					}
+					if (!this._shouldDownload({
+						contentType: attachment.mimeType,
+						filename: attachment.title,
+						url: attachment.url,
+					})) {
+						Zotero.debug("Translate: Not adding attachment: automatic downloads are disabled for this file type");
+						return false;
+					}
 				}
 			}
 			return true;
@@ -584,6 +597,15 @@ Zotero.Translate.ItemSaver.prototype = {
 		}
 		Zotero.debug('Translate: Ignoring attachment due to ATTACHMENT_MODE_IGNORE');
 		return false;
+	},
+
+	_shouldDownload: function (metadata) {
+		let policy = Zotero.AutomaticAttachmentDownloads;
+		return !policy || policy.shouldDownload({
+			...metadata,
+			automatic: this._automatic,
+			force: this._force,
+		});
 	},
 	
 	

@@ -445,8 +445,9 @@ Zotero.Sync.Storage.Local = {
 	 * @param {Integer} libraryID
 	 * @return {Promise<Number[]>} - Promise for an array of attachment itemIDs
 	 */
-	getFilesToDownload: function (libraryID, forcedOnly) {
-		var sql = "SELECT itemID FROM itemAttachments JOIN items USING (itemID) "
+	getFilesToDownload: async function (libraryID, forcedOnly) {
+		var sql = "SELECT itemID, syncState, contentType, path "
+					+ "FROM itemAttachments JOIN items USING (itemID) "
 					+ "WHERE libraryID=? AND syncState IN (?";
 		var params = [libraryID, this.SYNC_STATE_FORCE_DOWNLOAD];
 		if (!forcedOnly) {
@@ -458,7 +459,25 @@ Zotero.Sync.Storage.Local = {
 			// paths, which have somehow ended up in some users' libraries
 			+ "AND path!='' AND path NOT LIKE ?";
 		params.push('storage:.zotero%');
-		return Zotero.DB.columnQueryAsync(sql, params);
+		let rows = await Zotero.DB.queryAsync(sql, params);
+		let itemIDs = [];
+		let policy = Zotero.AutomaticAttachmentDownloads;
+		for (let row of rows) {
+			if (row.syncState == this.SYNC_STATE_FORCE_DOWNLOAD) {
+				itemIDs.push(row.itemID);
+				continue;
+			}
+			if (!policy || policy.shouldDownload({
+				contentType: row.contentType,
+				filename: row.path,
+			})) {
+				itemIDs.push(row.itemID);
+			}
+			else {
+				Zotero.debug(`Skipping automatic download for excluded attachment ${row.itemID}`);
+			}
+		}
+		return itemIDs;
 	},
 	
 	
