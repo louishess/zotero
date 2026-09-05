@@ -52,7 +52,9 @@ Subagent handoff: changed files, interface changes, tests actually run and resul
 - Baseline branches created; source worktrees clean at start.
 - Cloud seed: original annotation checkout commit `e8bd987d02` plus later uncommitted safety corrections must be reviewed as source inputs, not blindly cherry-picked.
 - Download seed: relevant uncommitted source/tests in sibling `ZoteroAutomaticDownloads`; exclude materialized LFS updater binaries and regenerate Fluent output.
-- All ZoteroMerge implementation and live acceptance gates remain pending.
+- Supervisor integrated shared cloud/download UI and startup seeds; implementation and integration tests are in progress.
+- 2026-09-05 worker baseline validation: `npm run typecheck` passed; `npm run test:pdf` passed 188/188. Evidence: sibling `combined-review/zoteromerge-worker-tests.log`. Worker source remains pinned to `731026106dabe56aef921351b7c3480678ee25fc`.
+- User confirmed no second Mac is currently available; Dropbox and Google Drive folders are not yet configured. These real-provider/two-Mac gates remain pending. Do not substitute simulations for them or mark the full goal complete.
 
 ## History and exact feature inputs
 

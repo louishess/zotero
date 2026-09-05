@@ -1,6 +1,6 @@
 {
-  "scope": "SI downloads plus three-mode PDF annotations; excludes linked-folder and automatic-download WIP",
-  "branch": "integrate/si-and-dual-annotations",
+  "scope": "ZoteroMerge: SI downloads, three-mode PDF annotations, built-in citation cloud folders for all downloaded article files, and per-type automatic-download controls",
+  "branch": "ZoteroMerge",
   "annotationBase": "52ac324e2bc9ed3df7726bd098997155293bf4ac",
   "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
   "mergeCommit": "c376949763febbfb7a2814e80cf32b62d2aee227",
@@ -19,5 +19,29 @@
   "npm": "11.17.0",
   "validatedIntegration": "c3d91b11a0e685af7f225b4591ac77ed936ab326",
   "connectorFeatureSource": "4c0baf1a7a975b31867eb9a1280aaf5a3fdd9925",
-  "masterGuide": "AGENTS.md"
+  "masterGuide": "AGENTS.md",
+  "completionStatus": "implementation-in-progress",
+  "zoteroMergeBaseline": {
+    "desktop": "637a88cca9c415504b094e41c48c0eb51a8dfbaa",
+    "connector": "659335473613664bfef3d08e64fe52d7c80e1005"
+  },
+  "prototypeInputSHA256": {
+    "ZoteroFileAnnotations/chrome/content/zotero/xpcom/linkedFolderAttachmentManager.js": "a8e17323a8c333a38ce321f135ec9b297368fa08cf272cb2acdeb2a876e9d790",
+    "ZoteroFileAnnotations/chrome/content/zotero/xpcom/linkedFolderProviders.js": "f79f0261231e629f7e496638ebd42f525e3ac392616275fe237cc5af2e5c62cb",
+    "ZoteroFileAnnotations/test/tests/linkedFolderAttachmentManagerTest.js": "0638807f4370212ae20cfa54dab71d3b3749b1b8d3a9de76e52a68b3ccc1ab89",
+    "ZoteroFileAnnotations/test/tests/linkedFolderProvidersTest.js": "2973dcf76c61881715fdab7d1138277ff2a8185640f5167ed36c972d1283a9b6",
+    "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/automaticAttachmentDownloads.js": "fbcadaf2619f0eba990d61101e300f637523f5542ccab42182ed155dcf8fd86d",
+    "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/translation/translate_item.js": "b13087bc3fb61a18652048423367be3461373a16450518afd232585c8c355237",
+    "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/storage/storageLocal.js": "d5f53feb311abca4bd5af54b5b085ec012120812dd873184909ce23f23ab86ae",
+    "ZoteroAutomaticDownloads/test/tests/automaticAttachmentDownloadsTest.js": "3981ecd58004f19dc7b9dbf0567273dda55dd3b154d625a31cd64b6c8a7a6204"
+  },
+  "pendingLiveAcceptance": {
+    "providers": [
+      "box-drive",
+      "dropbox",
+      "google-drive"
+    ],
+    "twoMacs": true,
+    "availability": "User has no second Mac currently; Dropbox and Google Drive are not configured."
+  }
 }
