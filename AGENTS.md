@@ -1,10 +1,10 @@
-# Combined Zotero project — master agent guide
+# ZoteroMerge — master agent guide
 
 This is the single maintained project-state and agent guide for **ZoteroCombined** and its sibling **ZoteroCombinedConnector**. Update this file when implementation, build inputs, validation, or remaining work changes. Do not create another planning or handoff document. Upstream submodule documentation remains owned by those projects.
 
 ## Current state
 
-Both active repositories use branch `integrate/si-and-dual-annotations`. The Desktop merge and matching Connector build are complete locally and ready for review and further work. Neither branch has been pushed. The separate original checkouts are rollback/reference copies and contain unrelated uncommitted work; do not reset or clean them.
+Both active repositories now use `ZoteroMerge`, created from Desktop `637a88cca9` and Connector `6593354`. The integration baseline is built and previously tested; ZoteroMerge completion work is in progress. The baseline integration branches have tracking refs; verify remote state instead of assuming they are unpublished. The separate original checkouts are rollback/reference copies and contain unrelated uncommitted work; do not reset or clean them.
 
 - Desktop source: `ZoteroCombined/` (this repository).
 - Connector source: sibling `ZoteroCombinedConnector/`; this is a separate extension build, not a Desktop subdirectory.
@@ -13,7 +13,46 @@ Both active repositories use branch `integrate/si-and-dual-annotations`. The Des
 - Evidence: sibling `combined-review/` contains build/test logs and the original-state snapshots. These are evidence and rollback material, not active instructions.
 - `integration/source-manifest.json` records source inputs. The external artifact `release-manifest.json` records the exact final commits, application version, lockfile hashes, and packaged checksums. Use `git rev-parse HEAD` for the current source revision; do not put a self-referential commit hash in a committed manifest.
 
-The included functionality is supplementary-information (SI) downloads plus Standard, PDF-only, and PDF-and-Zotero annotation modes. The later linked-cloud-folder extension and separate uncommitted automatic-download controls are **not included**. Do not treat their old planning documents or worktrees as implemented behavior in this branch.
+The baseline includes supplementary-information (SI) downloads plus Standard, PDF-only, and PDF-and-Zotero annotation modes. ZoteroMerge must add built-in cloud folders and automatic-download controls. Until their gates pass, treat those additions as unfinished. Historical plugin and isolated-download-branch instructions are superseded by the user-approved scope below.
+
+## Authorized completion scope and execution protocol
+
+The user approved the completion plan and explicitly requested Luna subagents at extra-high (`xhigh`) reasoning effort for most coding. The root agent supervises, reviews interface requests and diffs, integrates shared files, runs final gates, and makes milestone commits. **Subagents must not commit, push, reset, clean, change branches, or stage files.** Work only within assigned file ownership. Read this guide before editing. Ask the supervisor before changing a shared interface or another owner's files; continue independent assigned work while awaiting the response.
+
+- Deliver a macOS app and matching Chrome Connector on `ZoteroMerge`; no plugin extraction, public release, notarization, or personal-library migration is required.
+- Cloud organization is built in, disabled until configured, and covers existing/new downloaded single-file attachments beneath personal-library journal articles: main PDF plus all SI formats, including unknown formats. Exclude snapshots, URL-only links, unmanaged existing linked files, groups and unsupported parent/library categories. PDF annotation rules apply only to PDFs.
+- Use a stable ACS plain-text bibliography folder name, NFC normalization, maximum 100 code points (shorter for filesystem byte limits), collision suffixes within limits, and preserved attachment extensions. Metadata edits do not automatically rename folders. Never merge identities based on filenames or equal bytes. Conflicting reparent/merge folder mappings need explicit resolution.
+- Use `baseAttachmentPath` and relative linked paths, never a cloud API or cloud-hosted Zotero database. One explicitly enrolled organizer converts files; other desktops acquire, sync, read and annotate. Ownership claims are not distributed locks: unexpected claims/conflict copies stop conversion and preserve data.
+- Preserve resumable durable phases separately from waiting/error state. Source erasure is last, after current source/destination identity, linked item, child annotations, metadata, relations and full-text transfer or durable reindex disposition are verified. Serialize migration with annotation writes and reader opening. Recover idempotently from each phase; never silently discard incomplete prototype jobs.
+- Cloud bytes remain on ordinary Zotero Trash and noninteractive deletion. Explicit permanent managed-file removal revalidates current identity and uses recoverable Trash; orphan review retains changed/unavailable/ambiguous files. Legitimate annotation edits must update managed revision evidence.
+- Integrate seven default-enabled, device-local automatic-download controls: PDF, DOCX, MD, XLSX, MP3, MP4, WEBM. Existing local files still migrate when their download toggle is off. Explicit downloads and forced recovery bypass filtering. Unknown types keep stock behavior. Preserve the SI and associated-files gates independently.
+- Reconcile every affected attachment, including closed PDFs and multi-attachment notification batches. Preserve PDF-first Dual writes, native sync changes, conflict/read-only behavior, key generations, and tombstones. Attachment conversion transfers coordinator state without erasing annotation identities.
+
+### Ownership and interfaces
+
+Initial parallel assignments: cloud owner owns only `linkedFolderAttachmentManager.js`, `linkedFolderProviders.js` and their dedicated tests; annotation owner owns `annotationStorageCoordinator.js`, `reader.js` and dedicated coordinator tests; download owner owns `automaticAttachmentDownloads.js`, `translation/translate_item.js`, `storage/storageLocal.js` and its dedicated tests. The supervisor owns startup/module registration, preference defaults/UI, locales/styles, Connector integration, this guide, manifests, and all commits. Further assignments must explicitly name ownership changes.
+
+Retain mode values and `PDFWorker.readAnnotations()` / `applyAnnotationChanges()` contracts. Retain coordinator `reconcile()`, `applyChanges()`, `resolveConflicts()`; agree migration exclusion and state-transfer additions with the supervisor before consumers use them. Preserve `AutomaticAttachmentDownloads.classify()`, `isTypeEnabled()`, `shouldDownload()`, `shouldDownloadItem()`. Providers remain filesystem profiles. Manager additions include explicit organizer claim/release, versioned migration progress plus wait status, and orphan review.
+
+Subagent handoff: changed files, interface changes, tests actually run and results, tests pending with reasons, known failure paths, and review requests. Do not create competing plan/handoff documents. Do not modify upstream submodules or dependency lockfiles without assignment. Use focused tests during development; only the supervisor runs the shared staged Desktop runtime to avoid test-profile/build races.
+
+### Completion gates and live evidence
+
+1. Source baseline and reproducible inputs, with reference work preserved.
+2. Download-policy tests across automatic and explicit acquisition; preserve six SI publishers.
+3. Cloud migration safety and restart tests across every durable phase, path/root mutations, missing files, reader races, disk/permission failure and organizer conflicts.
+4. All annotation types and six transitions, closed-reader and multi-attachment changes, two readers, file/data delivery order, deleted-key protection and conversion state transfer.
+5. Accessible settings and actionable configuration, waiting, conflict, handover, deletion and orphan recovery.
+6. Current authenticated main-PDF/SI byte transfers for Nature, Cell, ACS, RSC, Science and Wiley, in disposable libraries.
+7. Real two-Mac tests for **each of Box Drive, Dropbox and Google Drive**, including different base paths, offline edits, placeholders, cloud conflict copies, organizer handover and restart. Simulators do not satisfy this gate. Missing accounts/devices remain pending, never passed.
+8. Pinned production macOS build, ad-hoc signing verification, matching Connector package, checksums, release manifest and recovery instructions. No completion claim until every required gate has evidence.
+
+### Current execution record
+
+- Baseline branches created; source worktrees clean at start.
+- Cloud seed: original annotation checkout commit `e8bd987d02` plus later uncommitted safety corrections must be reviewed as source inputs, not blindly cherry-picked.
+- Download seed: relevant uncommitted source/tests in sibling `ZoteroAutomaticDownloads`; exclude materialized LFS updater binaries and regenerate Fluent output.
+- All ZoteroMerge implementation and live acceptance gates remain pending.
 
 ## History and exact feature inputs
 
@@ -139,7 +178,7 @@ Staged checks verified both preference defaults, the preference server bridge, c
 
 ## Remaining work and historical context
 
-Automated integration is complete; manual acceptance is still needed for authenticated live publisher transfers, case-only/Unicode/long filename portability, and independent real file/data-sync delivery. Do not report these as completed. The combined run did not write to the personal library or run cloud migration.
+Baseline automated integration was completed; ZoteroMerge additions require new automated evidence, and manual acceptance is still needed for authenticated live publisher transfers, case-only/Unicode/long filename portability, and independent real file/data-sync delivery. Do not report these as completed. The combined run did not write to the personal library or run cloud migration.
 
 Historical 2026-08-08 normal-profile tests confirmed main PDF + SI transfers for ACS, Nature, and Cell. Those are historical results, not current combined-build tests. Useful controls:
 
