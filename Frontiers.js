@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2025-04-03 18:50:17"
+	"lastUpdated": "2026-09-05 23:17:28"
 }
 
 /*
@@ -145,23 +145,32 @@ async function doWeb(doc, url) {
 async function scrape(doc, doi, supplementOpts, articleID) {
 	let supplements = [];
 	if (supplementOpts.attach) {
-		// If we need supplements, we need the articleID (string of numbers) to
-		// construct the URL for the JSON article-info file containing the
-		// supplement names and URLs. articleID may already be there, or it may
-		// have to be scraped from the doc
-		if (!articleID) {
-			if (!doc) {
-				doc = await requestDocument(`${ARTICLE_BASEURL}/${doi}/full`);
+		// Current article pages render the published file links directly. Older
+		// pages expose only the supplemental button and require the observed API.
+		// Both routes are optional: a failed SI request must not block metadata.
+		try {
+			if (!doc && doi) {
+				try {
+					doc = await requestDocument(`${ARTICLE_BASEURL}/${doi}/full`);
+				}
+				catch (e) {
+					Z.debug("Frontiers: supplementary page unavailable; preserving metadata");
+				}
 			}
-			articleID = getArticleID(doc);
+			if (!articleID) {
+				articleID = getArticleID(doc, doc && doc.location && doc.location.href);
+			}
+			if (doc) {
+				supplements = getSupplementsFromDocument(doc, supplementOpts.asLink, articleID);
+			}
+			let hasSupplementarySection = doc && doc.querySelector
+				&& doc.querySelector("#supplementaryMaterial, .btn-open-supplemental");
+			if (!supplements.length && articleID && (!doc || hasSupplementarySection)) {
+				supplements = await getSupplements(articleID, supplementOpts.asLink);
+			}
 		}
-		// Skip the fetch of supplement info JSON (although lightweight) if doc
-		// is available but there's no supplement button on the page. Avoid the
-		// "#supplementary_view" selector because it's a duplicated element id
-		// (the page is malformed).
-		if (articleID
-			&& (!doc || doc.querySelector(".btn-open-supplemental"))) {
-			supplements = await getSupplements(articleID, supplementOpts.asLink);
+		catch (e) {
+			Z.debug("Frontiers: supplementary files unavailable; preserving metadata");
 		}
 	}
 
@@ -227,13 +236,43 @@ function getDOI(url) {
 	return m && m[1];
 }
 
-function getArticleID(doc) {
-	return attr(doc, "meta[name='citation_firstpage']", "content");
+function getArticleID(doc, url) {
+	let articleID = doc ? attr(doc, "meta[name='citation_firstpage']", "content") : null;
+	if (/^\d+$/.test(articleID || "")) return articleID;
+
+	// Prefer the current article URL/DOI. A page can contain links to cited
+	// Frontiers articles, so scanning every anchor before the current URL can
+	// select an unrelated article ID.
+	let currentURL = (doc && doc.location && doc.location.href) || url || "";
+	let doi = getDOI(currentURL);
+	let match = doi && doi.match(/\.(\d+)$/);
+	if (match) return match[1];
+
+	// Only use the observed direct supplementary-file route as a link fallback.
+	// This keeps cited article links and same-article landing/viewer routes out
+	// of article-ID discovery.
+	if (doc && doc.querySelectorAll) {
+		let selectors = [
+			"#supplementaryMaterial a[data-event='articleSupplementalData-button-download'][href]",
+			".SupplementalDataV4__file a[href]",
+		];
+		for (let selector of selectors) {
+			for (let link of doc.querySelectorAll(selector)) {
+				match = String(link.href || link.getAttribute("href") || "").match(/\/articles\/(\d+)\/file\//i);
+				if (match) return match[1];
+			}
+		}
+	}
+	return null;
 }
 
 var MIME_TYPES = {
 	txt: 'text/plain',
 	csv: 'text/csv',
+	tsv: 'text/tab-separated-values',
+	md: 'text/markdown',
+	fas: 'text/plain',
+	fasta: 'text/plain',
 	bz2: 'application/x-bzip2',
 	gz: 'application/gzip',
 	zip: 'application/zip',
@@ -241,37 +280,137 @@ var MIME_TYPES = {
 	doc: 'application/msword',
 	docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 	xls: 'application/vnd.ms-excel',
-	xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+	xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+	ppt: 'application/vnd.ms-powerpoint',
+	pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+	eps: 'application/postscript',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	png: 'image/png',
+	tif: 'image/tiff',
+	tiff: 'image/tiff',
+	mp3: 'audio/mpeg',
+	wav: 'audio/wav',
+	wma: 'audio/x-ms-wma',
+	avi: 'video/x-msvideo',
+	divx: 'video/divx',
+	flv: 'video/x-flv',
+	mov: 'video/quicktime',
+	mp4: 'video/mp4',
+	mpeg: 'video/mpeg',
+	mpg: 'video/mpeg',
+	wmv: 'video/x-ms-wmv'
 };
+
+function getFileName(url, fileInfo) {
+	let fileName = fileInfo && (fileInfo.FileName || fileInfo.Filename || fileInfo.Name);
+	if (typeof fileName === "string" && fileName.trim()) return ZU.trimInternal(fileName);
+	try {
+		let match = new URL(url).pathname.match(/\/file\/([^/]+)(?:\/|$)/i);
+		if (match) {
+			try {
+				return decodeURIComponent(match[1]);
+			}
+			catch (e) {
+				return match[1];
+			}
+		}
+	}
+	catch (e) {}
+	return "";
+}
+
+function getFileExtension(fileName, url) {
+	let match = String(fileName || "").match(/\.([^./]+)$/);
+	if (!match && url) {
+		try {
+			match = new URL(url).pathname.match(/\.([^./]+)$/);
+		}
+		catch (e) {}
+	}
+	return match && match[1].toLowerCase();
+}
+
+function normalizeSupplementURL(url, articleID, baseURL) {
+	let parsed;
+	try {
+		parsed = new URL(url, baseURL || ARTICLE_BASEURL);
+	}
+	catch (e) {
+		return null;
+	}
+	if (!/^https?:$/.test(parsed.protocol)
+		|| !/(^|\.)frontiersin\.org$/i.test(parsed.hostname)) {
+		return null;
+	}
+	let authority = String(url || "").match(/^https?:\/\/([^/?#]+)/i)
+		|| String(baseURL || "").match(/^https?:\/\/([^/?#]+)/i);
+	if (parsed.username || parsed.password || parsed.port
+		|| (authority && /:\d+$/.test(authority[1]))) return null;
+	let articleMatch = parsed.pathname.match(/^\/articles\/(\d+)\/file\/[^/]+(?:\/|$)/i);
+	if (!articleID || !articleMatch || articleMatch[1] !== String(articleID)) return null;
+	parsed.hash = "";
+	return parsed.href;
+}
+
+function makeSupplementAttachment(fileInfo, index, asLink, articleID, baseURL) {
+	let rawURL = fileInfo && (fileInfo.url || fileInfo.FileDownloadUrl);
+	let url = normalizeSupplementURL(rawURL, articleID, baseURL);
+	if (!url) return null;
+	let fileName = getFileName(url, fileInfo);
+	let mimeType = MIME_TYPES[getFileExtension(fileName, url)];
+	let attachment = {
+		title: fileName ? `Supplement - ${fileName}` : `Supplement ${index + 1}`,
+		url,
+		snapshot: !asLink && Boolean(mimeType),
+	};
+	if (mimeType) attachment.mimeType = mimeType;
+	return attachment;
+}
+
+function getSupplementsFromDocument(doc, asLink, articleID) {
+	if (!doc || !doc.querySelectorAll) return [];
+	let links = [];
+	let selectors = [
+		"#supplementaryMaterial a[data-event='articleSupplementalData-button-download'][href]",
+		".SupplementalDataV4__file a[data-event='articleSupplementalData-button-download'][href]",
+		".SupplementalDataV4__file a[href]",
+	];
+	for (let selector of selectors) {
+		for (let link of doc.querySelectorAll(selector)) {
+			if (!links.includes(link)) links.push(link);
+		}
+	}
+	let attachments = [];
+	let seen = new Set();
+	for (let i = 0; i < links.length; i++) {
+		let link = links[i];
+		let parent = link.parentNode;
+		let nameNode = parent && parent.querySelector && parent.querySelector(".SupplementalDataV4__file__name");
+		let fileName = nameNode && ZU.trimInternal(nameNode.textContent || "");
+		let attachment = makeSupplementAttachment({
+			url: link.href || link.getAttribute("href"),
+			FileName: fileName,
+		}, i, asLink, articleID, doc.location && doc.location.href);
+		if (attachment && !seen.has(attachment.url)) {
+			seen.add(attachment.url);
+			attachments.push(attachment);
+		}
+	}
+	return attachments;
+}
 
 async function getSupplements(articleID, asLink) {
 	let infoObj = await requestJSON(`${ARTICLE_BASEURL}/getsupplementaryfilesbyarticleid?articleid=${encodeURIComponent(articleID)}&ispublishedv2=false`);
+	let details = infoObj && (infoObj.SupplimentalFileDetails || infoObj.SupplementalFileDetails);
+	let fileInfoArray = details && details.FileDetails;
+	if (!Array.isArray(fileInfoArray)) throw new Error("malformed supplementary file response");
 	let attachments = [];
-	let fileInfoArray;
-	if (infoObj && infoObj.SupplimentalFileDetails
-		&& (fileInfoArray = infoObj.SupplimentalFileDetails.FileDetails)) {
-		for (let i = 0; i < fileInfoArray.length; i++) {
-			let fileInfo = fileInfoArray[i];
-			let url = fileInfo.FileDownloadUrl;
-			if (!url) continue;
-
-			let fileName = fileInfo.FileName;
-			let fileExt = fileName.split(".").pop();
-			if (fileExt) {
-				fileExt = fileExt.toLowerCase();
-			}
-			let mimeType = MIME_TYPES[fileExt];
-
-			// Save a link as attachment if hidden pref says so, or file
-			// mimeType unknown
-			let attachment = {
-				title: fileName ? `Supplement - ${fileName}` : `Supplement ${i + 1}`,
-				url,
-				snapshot: !asLink && Boolean(mimeType),
-			};
-			if (mimeType) {
-				attachment.mimeType = mimeType;
-			}
+	let seen = new Set();
+	for (let i = 0; i < fileInfoArray.length; i++) {
+		let attachment = makeSupplementAttachment(fileInfoArray[i], i, asLink, articleID);
+		if (attachment && !seen.has(attachment.url)) {
+			seen.add(attachment.url);
 			attachments.push(attachment);
 		}
 	}
