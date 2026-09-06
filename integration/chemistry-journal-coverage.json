@@ -39,12 +39,14 @@
       "issns": [],
       "translatorCandidate": "ACS Publications.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
+      "evidence": [
+        "test/tests/data/acs-organic-letters-supplementary/evidence.md"
+      ],
       "blocker": null
     },
     {
@@ -81,7 +83,7 @@
       "issns": [],
       "translatorCandidate": "RSC Publishing.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -468,12 +470,14 @@
       "issns": [],
       "translatorCandidate": "MDPI Journals.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
+      "evidence": [
+        "test/tests/data/mdpi-polymers-supplementary/evidence.md"
+      ],
       "blocker": null
     },
     {
@@ -481,7 +485,7 @@
       "issns": [],
       "translatorCandidate": "MDPI Journals.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -923,5 +927,17 @@
       "evidence": [],
       "blocker": null
     }
-  ]
+  ],
+  "rolloutLimit": {
+    "requested": "2026-09-05 late evening",
+    "maxAdditionalJournals": 5,
+    "remainingBatch": [
+      "Polymers",
+      "Organic Letters",
+      "Beilstein Journal of Organic Chemistry",
+      "Materials",
+      "Chemical Communications"
+    ],
+    "otherJournals": "Deferred at user request; no universal chemistry coverage claim."
+  }
 }
