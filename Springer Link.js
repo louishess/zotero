@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2024-07-22 20:08:47"
+	"lastUpdated": "2026-09-05 00:00:00"
 }
 
 /*
@@ -122,6 +122,182 @@ function doWeb(doc, url) {
 	else {
 		scrape(doc, url);
 	}
+}
+
+// Springer exposes article supplementary files as direct links in a
+// supplementary section. Keep the MIME map limited to formats that Zotero's
+// attachment downloader can identify; unknown extensions remain linked URLs.
+var SPRINGER_SUPPLEMENTARY_MIME_TYPES = {
+	pdf: "application/pdf",
+	doc: "application/msword",
+	docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	xls: "application/vnd.ms-excel",
+	xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	csv: "text/csv",
+	tsv: "text/tab-separated-values",
+	txt: "text/plain",
+	md: "text/markdown",
+	zip: "application/zip",
+	tar: "application/x-tar",
+	gz: "application/gzip",
+	bz2: "application/x-bzip2",
+	mp3: "audio/mpeg",
+	mp4: "video/mp4",
+	webm: "video/webm",
+	tif: "image/tiff",
+	tiff: "image/tiff",
+	gif: "image/gif",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	png: "image/png"
+};
+
+function getSpringerHiddenPref(name) {
+	try {
+		return typeof Z !== "undefined" && Z.getHiddenPref && Boolean(Z.getHiddenPref(name));
+	}
+	catch (e) {
+		return false;
+	}
+}
+
+function normalizeSpringerURL(href, doc) {
+	if (!href) return null;
+	try {
+		var base = doc && doc.location && doc.location.href
+			? doc.location.href
+			: "https://link.springer.com/";
+		var url = new URL(href, base);
+		if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+		if (url.username || url.password || url.port) return null;
+		var host = url.hostname.toLowerCase();
+		if (host !== "media.springernature.com" && host !== "link.springer.com") return null;
+		// Fragments do not identify a different file. Preserve query parameters,
+		// including signed download parameters.
+		url.hash = "";
+		return url;
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function normalizeSpringerDOI(doi) {
+	try {
+		return decodeURIComponent(doi || "").toLowerCase();
+	}
+	catch (e) {
+		return String(doi || "").toLowerCase();
+	}
+}
+
+function isSpringerSupplementaryURL(url, doi) {
+	if (!url || url.hostname.toLowerCase() !== "media.springernature.com") return false;
+	var pathname;
+	try {
+		pathname = decodeURIComponent(url.pathname).toLowerCase();
+	}
+	catch (e) {
+		return false;
+	}
+	// The observed Springer ESM route includes the article DOI in the path.
+	// Requiring that exact path segment prevents cited-article and other
+	// publisher files from being attached to this item.
+	if (pathname.indexOf("/esm/art:" + normalizeSpringerDOI(doi) + "/") === -1) return false;
+	var mediaObjects = "/mediaobjects/";
+	var mediaObjectsIndex = pathname.indexOf(mediaObjects);
+	if (mediaObjectsIndex === -1) return false;
+	// Keep only the observed direct-file component. This excludes same-DOI
+	// viewer/preview routes nested below MediaObjects.
+	var filePath = pathname.slice(mediaObjectsIndex + mediaObjects.length);
+	return Boolean(filePath) && filePath.indexOf("/") === -1
+		&& filePath !== "." && filePath !== "..";
+}
+
+function getSpringerAttachmentExtension(link, url) {
+	var pathname;
+	try {
+		pathname = decodeURIComponent(url.pathname || "");
+	}
+	catch (e) {
+		pathname = url.pathname || "";
+	}
+	var match = pathname.match(/\.([a-z0-9][a-z0-9-]{0,11})$/i);
+	if (match) return match[1].toLowerCase();
+
+	// A download filename is explicit metadata when supplied by the page.
+	// Never inspect the query string or a display label for a type: a page or
+	// video route can be labelled “download PDF” without being a file.
+	var downloadName = link && link.getAttribute && link.getAttribute("download");
+	var decodedDownloadName = downloadName;
+	try {
+		decodedDownloadName = downloadName && decodeURIComponent(downloadName);
+	}
+	catch (e) {
+		return "";
+	}
+	match = decodedDownloadName && decodedDownloadName.match(/\.([a-z0-9][a-z0-9-]{0,11})$/i);
+	if (!match) return "";
+	return match[1].toLowerCase();
+}
+
+function getSpringerSupplementaryLinks(doc) {
+	var links = [];
+	if (!doc || !doc.querySelectorAll) return links;
+	var sections = doc.querySelectorAll("section[data-title]");
+	for (var i = 0; i < sections.length; i++) {
+		var section = sections[i];
+		var sectionTitle = section.getAttribute("data-title") || "";
+		if (!/supplement/i.test(sectionTitle) || !section.querySelectorAll) continue;
+		// The data-test marker is present on current Springer pages, but older
+		// pages can designate a valid file with an ordinary anchor. Route
+		// validation below is the authority, so inspect all section links.
+		var sectionLinks = section.querySelectorAll("a[href]");
+		for (var j = 0; j < sectionLinks.length; j++) links.push(sectionLinks[j]);
+	}
+	return links;
+}
+
+function getSpringerSupplementaryAttachments(doc, doi, mainPDFURL, attachAsLink) {
+	var attachments = [];
+	var seenURLs = new Set();
+	var mainURL = normalizeSpringerURL(mainPDFURL, doc);
+	if (mainURL) seenURLs.add(mainURL.href);
+
+	var links = getSpringerSupplementaryLinks(doc);
+	for (var i = 0; i < links.length; i++) {
+		var link = links[i];
+		var rawURL = link.href || (link.getAttribute && link.getAttribute("href"));
+		var url = normalizeSpringerURL(rawURL, doc);
+		if (!url || !isSpringerSupplementaryURL(url, doi)) continue;
+		var extension = getSpringerAttachmentExtension(link, url);
+		if (!extension) continue; // no concrete file route
+		if (seenURLs.has(url.href)) continue;
+		seenURLs.add(url.href);
+
+		var mimeType = SPRINGER_SUPPLEMENTARY_MIME_TYPES[extension];
+		var title = ZU.trimInternal(link.textContent || "");
+		if (!title) title = "Supplementary Material " + (attachments.length + 1);
+		var attachment = {
+			title: title,
+			url: url.href,
+			// Known files download in file mode; link mode and unknown MIME types
+			// remain linked URLs.
+			snapshot: !attachAsLink && Boolean(mimeType)
+		};
+		if (mimeType) attachment.mimeType = mimeType;
+		attachments.push(attachment);
+	}
+	return attachments;
+}
+
+function attachSpringerSupplementary(doc, item, doi, mainPDFURL) {
+	item.attachments = item.attachments.concat(getSpringerSupplementaryAttachments(
+		doc,
+		doi,
+		mainPDFURL,
+		getSpringerHiddenPref("supplementaryAsLink")
+	));
 }
 
 function complementItem(doc, item) {
@@ -274,6 +450,18 @@ function scrape(doc, url) {
 				title: "Full Text PDF",
 				mimeType: "application/pdf"
 			});
+			if (getSpringerHiddenPref("attachSupplementary")) {
+				try {
+					attachSpringerSupplementary(doc, item, DOI, pdfURL);
+				}
+				catch (e) {
+					// Supplementary files are optional. Preserve metadata and the
+					// primary PDF when a malformed page or optional extraction error
+					// occurs.
+					Z.debug("Springer Link: Error attaching supplementary information.");
+					Z.debug(e);
+				}
+			}
 			item.complete();
 		});
 		translator.translate();

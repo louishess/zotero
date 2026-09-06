@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-06-05 15:27:44"
+	"lastUpdated": "2026-09-05 00:00:00"
 }
 
 function detectWeb(doc, url) {
@@ -221,64 +221,182 @@ function getAbstract(doc) {
 	return paragraphs.join('\n');
 }
 
-// mimetype map for supplementary attachments
-// intentionally excluding potentially large files like videos and zip files
+// MIME types for supplementary files exposed by the legacy ScienceDirect
+// attachment markup. Unknown formats remain ordinary links in file mode.
 var suppTypeMap = {
 	pdf: 'application/pdf',
-	//	'zip': 'application/zip',
 	doc: 'application/msword',
 	docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 	xls: 'application/vnd.ms-excel',
-	xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+	xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+	csv: 'text/csv',
+	tsv: 'text/tab-separated-values',
+	txt: 'text/plain',
+	zip: 'application/zip',
+	cif: 'chemical/x-cif',
+	mp4: 'video/mp4'
 };
 
-// attach supplementary information
-function attachSupplementary(doc, item) {
-	var links = ZU.xpath(doc, './/span[starts-with(@class, "MMCvLABEL_SRC")]');
-	var link, title, url, type, snapshot;
-	var attachAsLink = Z.getHiddenPref("supplementaryAsLink");
-	for (var i = 0, n = links.length; i < n; i++) {
-		link = links[i].firstElementChild;
-		if (!link || link.nodeName.toUpperCase() !== 'A') continue;
+function getAttribute(element, name) {
+	if (!element) return '';
+	if (element.getAttribute) return element.getAttribute(name) || '';
+	return element[name] || '';
+}
 
-		url = link.href;
-		if (!url) continue;
+function normalizeAttachmentURL(url) {
+	try {
+		var parsed = new URL(url);
+		parsed.hash = '';
+		return parsed.href;
+	}
+	catch (e) {
+		return url.replace(/#.*$/, '');
+	}
+}
 
-		title = ZU.trimInternal(link.textContent);
-		if (!title) title = 'Supplementary Data';
-
-		type = suppTypeMap[url.substr(url.lastIndexOf('.') + 1).toLowerCase()];
-		snapshot = !attachAsLink && type;
-
-		var attachment = {
-			title: title,
-			url: url,
-			mimeType: type,
-			snapshot: !!snapshot
-		};
-
-		var replaced = false;
-		if (snapshot && title.search(/Article plus Supplemental Information/i) != -1) {
-			// replace full text PDF
-			for (var j = 0, m = item.attachments.length; j < m; j++) {
-				if (item.attachments[j].title == "ScienceDirect Full Text PDF") {
-					attachment.title = "Article plus Supplemental Information";
-					item.attachments[j] = attachment;
-					replaced = true;
-					break;
-				}
-			}
+function getAttachmentExtension(link, url) {
+	var filename = getAttribute(link, 'download');
+	if (filename) {
+		var filenames = [filename];
+		try {
+			var decodedFilename = decodeURIComponent(filename);
+			if (decodedFilename !== filename) filenames.push(decodedFilename);
 		}
-
-		if (!replaced) {
-			item.attachments.push(attachment);
+		catch (e) {
+			// Literal percent signs in a publisher filename are valid.
+		}
+		for (var i = 0; i < filenames.length; i++) {
+			var filenameMatch = filenames[i].match(/\.([a-z0-9][a-z0-9-]*)$/i);
+			if (filenameMatch) return filenameMatch[1].toLowerCase();
 		}
 	}
+
+	try {
+		var pathname = decodeURIComponent(new URL(url).pathname);
+		var pathMatch = pathname.match(/\.([a-z0-9][a-z0-9-]*)$/i);
+		return pathMatch ? pathMatch[1].toLowerCase() : '';
+	}
+	catch (e) {
+		return '';
+	}
+}
+
+function getArticlePII(doc, mainPDFURL) {
+	var sources = [doc && doc.location && doc.location.href, mainPDFURL];
+	for (var i = 0; i < sources.length; i++) {
+		if (!sources[i]) continue;
+		var match = sources[i].match(/(?:\/pii\/|1-s2\.0-)([A-Z0-9]+)(?:[-/?#]|$)/i);
+		if (match) return match[1].toUpperCase();
+	}
+	return '';
+}
+
+function isScienceDirectFileURL(url, articlePII) {
+	try {
+		var parsed = new URL(url);
+		if (!/^https?:$/.test(parsed.protocol)) return false;
+		if (parsed.username || parsed.password || parsed.port) return false;
+		var host = parsed.hostname.toLowerCase();
+		if (!(host === 'sciencedirect.com'
+			|| host.endsWith('.sciencedirect.com')
+			|| host === 'els-cdn.com'
+			|| host.endsWith('.els-cdn.com'))) return false;
+
+		var pathname = decodeURIComponent(parsed.pathname);
+		var fileMatch = pathname.match(
+			/\/content\/image\/1-s2\.0-([A-Z0-9]+)-mmc\d+(?:\.[a-z0-9][a-z0-9-]*)?$/i
+		);
+		return !!fileMatch && !!articlePII
+			&& fileMatch[1].toUpperCase() === articlePII;
+	}
+	catch (e) {
+		return false;
+	}
+}
+
+function getSupplementaryLinks(doc) {
+	var links = [];
+	var legacy = ZU.xpath(doc, './/span[starts-with(@class, "MMCvLABEL_SRC")]');
+	for (var i = 0; i < legacy.length; i++) {
+		var legacyLink = legacy[i].querySelector
+			? legacy[i].querySelector('a[href]')
+			: legacy[i].firstElementChild;
+		if (legacyLink && legacyLink.nodeName.toUpperCase() === 'A') {
+			links.push({ link: legacyLink, legacy: true });
+		}
+	}
+
+	return links;
+}
+
+function getSupplementaryAttachments(doc, attachAsLink, mainPDFURL) {
+	var attachments = [];
+	var seenURLs = new Set();
+	if (mainPDFURL) seenURLs.add(normalizeAttachmentURL(mainPDFURL));
+	var articlePII = getArticlePII(doc, mainPDFURL);
+
+	var links = getSupplementaryLinks(doc);
+	for (var i = 0; i < links.length; i++) {
+		var link = links[i].link;
+		try {
+			var rawURL = link.href || getAttribute(link, 'href');
+			if (!rawURL) continue;
+			var url = new URL(rawURL, doc.location && doc.location.href
+				? doc.location.href
+				: 'https://www.sciencedirect.com/').href;
+			if (!isScienceDirectFileURL(url, articlePII)) continue;
+			url = normalizeAttachmentURL(url);
+			if (seenURLs.has(url)) continue;
+			seenURLs.add(url);
+
+			var title = ZU.trimInternal(link.textContent || '');
+			if (!title || /^download(?:\s*:)?$/i.test(title)) {
+				var label = link.parentElement && link.parentElement.textContent;
+				if (label) title = ZU.trimInternal(label);
+			}
+			if (!title) title = 'Supplementary Data';
+
+			var extension = getAttachmentExtension(link, url);
+			var type = suppTypeMap[extension];
+			var attachment = {
+				title: title,
+				url: url,
+				mimeType: type,
+				snapshot: !attachAsLink && !!type
+			};
+			attachments.push(attachment);
+		}
+		catch (e) {
+			Z.debug('Skipping malformed ScienceDirect supplementary link.');
+			Z.debug(e, 2);
+		}
+	}
+	return attachments;
+}
+
+// Attach supplementary information additively. A combined article/SI PDF is
+// still a supplementary attachment and must never replace the main PDF.
+function attachSupplementary(doc, item, mainPDFURL) {
+	var attachments = getSupplementaryAttachments(
+		doc,
+		Z.getHiddenPref("supplementaryAsLink"),
+		mainPDFURL
+	);
+	item.attachments = item.attachments.concat(attachments);
 }
 
 
 async function processRIS(doc, text, isSearchResult = false) {
-	let pdfURL = await getPDFLink(doc);
+	let pdfURL = false;
+	try {
+		pdfURL = await getPDFLink(doc);
+	}
+	catch (e) {
+		// A PDF redirect or access check must not prevent a valid RIS citation
+		// and supplementary descriptors from completing.
+		Z.debug('ScienceDirect PDF lookup failed; completing metadata without it.');
+		Z.debug(e, 2);
+	}
 
 	// Book-series chapters have a series ISSN (tagged SN)
 	let isBookSeriesChapter = /^SN\s+-\s+\d{4}-\d{3}[\dxX]\s*$/m.test(text);
@@ -375,7 +493,7 @@ async function processRIS(doc, text, isSearchResult = false) {
 		// attach supplementary data
 		if (Z.getHiddenPref && Z.getHiddenPref("attachSupplementary")) {
 			try { // don't fail if we can't attach supplementary data
-				attachSupplementary(doc, item);
+				attachSupplementary(doc, item, pdfURL);
 			}
 			catch (e) {
 				Z.debug("Error attaching supplementary information.");
