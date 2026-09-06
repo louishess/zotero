@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsb",
-	"lastUpdated": "2026-08-08 19:45:00"
+	"lastUpdated": "2026-09-06 00:00:00"
 }
 
 /*
@@ -36,12 +36,12 @@
 	***** END LICENSE BLOCK *****
 */
 
+/** Both search result and book ToC pages use javascript to load content, so
+ * this actually doesn't work as intended. Search results will work, but
+ * will also trigger on empty result set. detectWeb for book ToC does not
+ * work, but doWeb does,
+ */
 function getResults(doc) {
-	/** Both search result and book ToC pages use javascript to load content, so
-	 * this actually doesn't work as intended. Search results will work, but
-	 * will also trigger on empty result set. detectWeb for book ToC does not
-	 * work, but doWeb does,
-	 */
 	return ZU.xpath(doc, '//div[@id="all" or @id="chapterList"]//div[contains(@class,"title_text")]//a[not(contains(@href,"/database/"))]');
 }
 
@@ -52,7 +52,11 @@ function detectWeb(doc, url) {
 	}
 	// apparently URLs sometimes have upper case as in /Content/ArticleLanding/
 	if ((/\/content\/articlelanding\//i.test(url)
-		|| /\/[a-z]{2}\/article\/doi\/10\.1039\//i.test(url))
+		|| /\/[a-z]{2}\/article\/doi\/10\.1039\//i.test(url)
+		// Current RSC pages redirect to canonical issue routes such as
+		// /sc/article/15/11/3879/827846/Title and legacy routes such as
+		// /ee/article-abstract/5/1/5221/349075/Title.
+		|| /\/[a-z]{2}\/article(?:-abstract)?\/(?:doi\/10\.1039\/|(?:\d+\/){4})/i.test(url))
 		&& ZU.xpathText(doc, '//meta[@name="citation_title"]/@content')) {
 		return 'journalArticle';
 	}
@@ -99,6 +103,19 @@ function getSupplementaryMimeType(link, title) {
 function getSupplementaryAttachments(doc, attachAsLink) {
 	var attachments = [];
 	var seen = {};
+	var pageURL = doc.location && (doc.location.href || String(doc.location));
+	var page;
+	var articleID;
+	try {
+		page = pageURL && new URL(pageURL);
+		// The current and legacy canonical routes both expose the numeric RSC
+		// article ID immediately after volume/issue/page.
+		articleID = pageURL && pageURL.match(/\/article(?:-abstract)?\/(?:\d+\/){3}(\d+)(?:\/|$)/i);
+		articleID = articleID && articleID[1];
+	}
+	catch (e) {
+		page = null;
+	}
 	var links = doc.querySelectorAll([
 		'.widget-ArticleDataSupplements a[href*="/article-supplement/"]',
 		'a.js-download-file-gtm-datalayer-event[href*="/article-supplement/"]',
@@ -107,7 +124,21 @@ function getSupplementaryAttachments(doc, attachAsLink) {
 
 	for (var i = 0; i < links.length; i++) {
 		var link = links[i];
-		var attachmentURL = link.href.replace(/#.*$/, '');
+		var parsedURL;
+		try {
+			parsedURL = new URL(link.href, pageURL);
+		}
+		catch (e) {
+			continue;
+		}
+		if (!/^https?:$/.test(parsedURL.protocol)
+			|| parsedURL.username || parsedURL.password || parsedURL.port
+			|| page && parsedURL.host.toLowerCase() != page.host.toLowerCase()) {
+			continue;
+		}
+		var supplementID = parsedURL.pathname.match(/\/article-supplement\/([^/]+)/i);
+		if (articleID && supplementID && articleID != supplementID[1]) continue;
+		var attachmentURL = parsedURL.href.replace(/#.*$/, '');
 		if (!attachmentURL || seen[attachmentURL]) continue;
 
 		var container = link.closest && link.closest('.dataSuppLink');
@@ -152,9 +183,16 @@ function scrape(doc, url, type) {
 		// Preserve Embedded Metadata's main-PDF attachment. Supplementary files
 		// are additive and obey the shared Connector/Desktop preferences.
 		if (Z.getHiddenPref && Z.getHiddenPref('attachSupplementary')) {
-			var attachments = getSupplementaryAttachments(
-				doc, Z.getHiddenPref('supplementaryAsLink'));
-			item.attachments = item.attachments.concat(attachments);
+			try {
+				var attachments = getSupplementaryAttachments(
+					doc, Z.getHiddenPref('supplementaryAsLink'));
+				item.attachments = item.attachments.concat(attachments);
+			}
+			catch (e) {
+				// Supplementary files are optional; preserve metadata and the main PDF
+				// when the page's optional SI section cannot be inspected.
+				Z.debug('RSC Publishing: Error attaching supplementary information.');
+			}
 		}
 
 		item.complete();
