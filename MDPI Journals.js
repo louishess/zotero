@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2022-01-24 13:33:03"
+	"lastUpdated": "2026-09-05 00:00:00"
 }
 
 /*
@@ -76,6 +76,151 @@ function doWeb(doc, url) {
 	}
 }
 
+// Keep this list limited to formats for which the downloader has a useful
+// content type. Unknown formats remain linked URLs, as required by the
+// supplementary-attachment contract.
+var MDPI_SUPPLEMENTARY_MIME_TYPES = {
+	pdf: "application/pdf",
+	doc: "application/msword",
+	docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	xls: "application/vnd.ms-excel",
+	xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	csv: "text/csv",
+	tsv: "text/tab-separated-values",
+	txt: "text/plain",
+	md: "text/markdown",
+	zip: "application/zip",
+	tar: "application/x-tar",
+	gz: "application/gzip",
+	bz2: "application/x-bzip2",
+	mp3: "audio/mpeg",
+	mp4: "video/mp4",
+	webm: "video/webm"
+};
+
+function getMDPIURL(href, doc) {
+	if (!href) return null;
+	try {
+		var url = new URL(href, doc.location.href);
+		if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+		if (url.username || url.password) return null;
+		// MDPI's supplementary downloads are served by these hosts in the
+		// observed article pages. Keep the allowlist narrow to the page's
+		// publisher/CDN hosts.
+		var host = url.hostname.toLowerCase();
+		if (["www.mdpi.com", "mdpi.com", "pub.mdpi-res.com"].indexOf(host) === -1) {
+			return null;
+		}
+		// Fragments do not identify a different downloadable file. Preserve
+		// all query parameters, including signed version parameters.
+		url.hash = "";
+		return url;
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function getMDPIElementText(element) {
+	return element ? ZU.trimInternal(element.textContent || "") : "";
+}
+
+function getMDPIFileEntry(link) {
+	var node = link;
+	for (var i = 0; node && i < 5; i++, node = node.parentNode) {
+		if (node.nodeName && node.nodeName.toUpperCase() === "LI") return node;
+	}
+	return null;
+}
+
+function getMDPIFileExtension(url, link, entry) {
+	// Extension inference from the URL must use pathname only. A query-string
+	// suffix can be a signature or selector and is not a file extension.
+	var pathname = url.pathname || "";
+	var match = pathname.match(/\.([a-z0-9]{1,12})$/i);
+	var extension = match && match[1].toLowerCase();
+	if (extension && MDPI_SUPPLEMENTARY_MIME_TYPES[extension]) return extension;
+
+	// A download filename is explicit metadata when supplied by the page.
+	var downloadName = link.getAttribute("download");
+	match = downloadName && downloadName.match(/\.([a-z0-9]{1,12})$/i);
+	if (match && MDPI_SUPPLEMENTARY_MIME_TYPES[match[1].toLowerCase()]) {
+		return match[1].toLowerCase();
+	}
+
+	// MDPI exposes the type and size in the same paragraph as the file link,
+	// e.g. "(ZIP, 1193 KB)". This is observed download metadata, not a name
+	// guessed from the URL.
+	var entryText = getMDPIElementText(entry);
+	match = entryText.match(/\(\s*([a-z0-9][a-z0-9+.-]*)\s*(?:,|\))/i);
+	if (match && MDPI_SUPPLEMENTARY_MIME_TYPES[match[1].toLowerCase()]) {
+		return match[1].toLowerCase();
+	}
+	return null;
+}
+
+function isMDPIFileEntry(link, url, extension, articlePath) {
+	var pathname = url.pathname || "";
+	// A direct /sN route is only a file when it belongs to the article being
+	// translated. This prevents a cited article's supplementary link inside a
+	// modal from being attached to the current item.
+	var directFile = pathname.match(/^(\/\d{4,5}-\d{4}\/\d+\/\d+\/\d+)(\/s\d+)(?:\.[a-z0-9]{1,12})?$/i);
+	if (directFile) return Boolean(articlePath && directFile[1] === articlePath);
+
+	// Modal links can include article landing/viewer routes. Even observed
+	// "(ZIP, size)" text must not turn those pages into file attachments.
+	if (/\.(?:html?|php|aspx)$/i.test(pathname)
+		|| /\/(?:article|viewer|view|pdf|html)(?:\/|$)/i.test(pathname)) {
+		return false;
+	}
+	if (link.getAttribute("download") || extension) return true;
+	// An unrecognised pathname extension is still a file link. Do not infer a
+	// MIME type for it; the downloader will preserve it as a linked URL.
+	return /\.[a-z0-9]{1,12}$/i.test(pathname);
+}
+
+function getMDPISupplementaryTitle(link, entry, index) {
+	var linkText = getMDPIElementText(link);
+	var entryLabel = entry && entry.querySelector("b");
+	var labelText = getMDPIElementText(entryLabel);
+	if (labelText && linkText) return labelText + " " + linkText;
+	if (linkText) return linkText;
+	if (labelText) return labelText;
+	return "Supplementary Material " + (index + 1);
+}
+
+function attachMDPISupplementary(doc, item) {
+	var modal = doc.querySelector("#supplementaryModal");
+	if (!modal) return;
+	var links = modal.querySelectorAll("a[href]");
+	var attachAsLink = Z.getHiddenPref("supplementaryAsLink");
+	var articlePathMatch = (doc.location.pathname || "").match(/^\/\d{4,5}-\d{4}\/\d+\/\d+\/\d+$/i);
+	var articlePath = articlePathMatch && articlePathMatch[0];
+	var seen = {};
+	for (var i = 0; i < links.length; i++) {
+		var link = links[i];
+		var url = getMDPIURL(link.getAttribute("href"), doc);
+		if (!url) continue;
+		var entry = getMDPIFileEntry(link);
+		var extension = getMDPIFileExtension(url, link, entry);
+		if (!isMDPIFileEntry(link, url, extension, articlePath)) continue;
+		var stableURL = url.href;
+		if (seen[stableURL]) continue;
+		seen[stableURL] = true;
+
+		var mimeType = extension && MDPI_SUPPLEMENTARY_MIME_TYPES[extension];
+		var attachment = {
+			title: getMDPISupplementaryTitle(link, entry, i),
+			url: stableURL,
+			// Known files download in file mode; explicit link mode and unknown
+			// MIME types remain linked URLs.
+			snapshot: !attachAsLink && Boolean(mimeType)
+		};
+		if (mimeType) attachment.mimeType = mimeType;
+		item.attachments.push(attachment);
+	}
+}
+
 function scrape(doc, url) {
 	var translator = Zotero.loadTranslator('web');
 	// use Embedded Metadata
@@ -99,6 +244,15 @@ function scrape(doc, url) {
 		item.title = htmlDecode(item.title);
 		item.abstractNote = htmlDecode(item.abstractNote);
 		delete item.extra;
+		if (Z.getHiddenPref && Z.getHiddenPref("attachSupplementary")) {
+			try {
+				attachMDPISupplementary(doc, item);
+			}
+			catch (e) {
+				Z.debug("MDPI: Error attaching supplementary information.");
+				Z.debug(e);
+			}
+		}
 		item.complete();
 	});
 	translator.translate();
