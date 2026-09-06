@@ -60,7 +60,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Chemical Science",
@@ -83,13 +84,16 @@
       "issns": [],
       "translatorCandidate": "RSC Publishing.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/rsc-chemical-communications/evidence.md"
+      ],
+      "blocker": "Live Connector-to-Desktop byte transfer not tested for this journal.",
+      "lastTestedRevision": "4e4574c0ee1b468191aa8de2214c2a4332892bff"
     },
     {
       "title": "Physical Chemistry Chemical Physics",
@@ -102,7 +106,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Journal of Materials Chemistry",
@@ -115,7 +120,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Angewandte Chemie",
@@ -128,7 +134,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Chemistry Europe (family discovery)",
@@ -141,7 +148,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Advanced Materials",
@@ -154,7 +162,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Nature Chemistry",
@@ -167,7 +176,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Nature Catalysis",
@@ -180,7 +190,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Nature Materials",
@@ -193,7 +204,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Nature Communications",
@@ -206,7 +218,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Chem",
@@ -219,7 +232,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Joule",
@@ -232,7 +246,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Cell Reports Physical Science",
@@ -245,7 +260,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Science",
@@ -258,7 +274,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Science Advances",
@@ -271,7 +288,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "World Scientific (journal discovery)",
@@ -284,7 +302,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Annual Reviews (journal discovery)",
@@ -297,7 +316,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Tetrahedron",
@@ -326,7 +346,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Analytica Chimica Acta",
@@ -339,7 +360,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Journal of Chromatography",
@@ -352,7 +374,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Electrochimica Acta",
@@ -365,7 +388,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Chemical Engineering Journal",
@@ -378,7 +402,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Analytical and Bioanalytical Chemistry",
@@ -425,7 +450,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Molecules",
@@ -485,13 +511,16 @@
       "issns": [],
       "translatorCandidate": "MDPI Journals.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/mdpi-materials-supplementary/evidence.md"
+      ],
+      "blocker": "Live Connector-to-Desktop byte transfer not tested for this journal.",
+      "lastTestedRevision": "4e4574c0ee1b468191aa8de2214c2a4332892bff"
     },
     {
       "title": "Nanomaterials",
@@ -504,7 +533,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Electrochem",
@@ -517,7 +547,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Frontiers in Chemistry",
@@ -548,20 +579,24 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Beilstein Journal of Organic Chemistry",
       "issns": [],
-      "translatorCandidate": null,
+      "translatorCandidate": "Beilstein Journal of Organic Chemistry.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/beilstein-organic/evidence.md"
+      ],
+      "blocker": "Live Connector-to-Desktop byte transfer not tested for this journal.",
+      "lastTestedRevision": "4e4574c0ee1b468191aa8de2214c2a4332892bff"
     },
     {
       "title": "Beilstein Journal of Nanotechnology",
@@ -574,7 +609,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Acta Crystallographica",
@@ -587,7 +623,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "IUCrJ",
@@ -600,7 +637,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "IUCrData",
@@ -613,7 +651,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Journal of Applied Crystallography",
@@ -626,7 +665,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Synthesis",
@@ -639,7 +679,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Synlett",
@@ -652,7 +693,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Taylor & Francis chemistry (journal discovery)",
@@ -665,7 +707,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Journal of Chemical Physics",
@@ -678,7 +721,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "IOP chemistry interfaces (journal discovery)",
@@ -691,7 +735,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "APS materials interfaces (journal discovery)",
@@ -704,7 +749,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Pure and Applied Chemistry",
@@ -717,7 +763,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Bulletin of the Chemical Society of Japan",
@@ -730,7 +777,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Chemistry Letters",
@@ -743,7 +791,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Cambridge chemistry/materials (journal discovery)",
@@ -756,7 +805,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "SAGE chemistry/materials (journal discovery)",
@@ -769,7 +819,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Japanese regional chemistry (journal discovery)",
@@ -782,7 +833,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Latin American chemistry (journal discovery)",
@@ -795,7 +847,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "PLOS multidisciplinary chemistry (journal discovery)",
@@ -808,7 +861,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Atmospheric chemistry (journal discovery)",
@@ -821,7 +875,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Legacy Hindawi chemistry (journal discovery)",
@@ -834,7 +889,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Bentham (journal discovery)",
@@ -847,7 +903,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Science China/KeAi (journal discovery)",
@@ -860,7 +917,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "CSIRO (journal discovery)",
@@ -873,7 +931,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "NRC/CSP (journal discovery)",
@@ -886,7 +945,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "EDP (journal discovery)",
@@ -899,7 +959,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "Karger (journal discovery)",
@@ -912,7 +973,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     },
     {
       "title": "OJS and remaining society/regional publishers (journal discovery)",
@@ -925,7 +987,8 @@
       "transferStatus": "uninspected",
       "controls": [],
       "evidence": [],
-      "blocker": null
+      "blocker": null,
+      "deferredByUserLimit": true
     }
   ],
   "rolloutLimit": {

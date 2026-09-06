@@ -1,0 +1,33 @@
+{
+  "url": "https://www.beilstein-journals.org/bjoc/articles/14/170",
+  "mainPDF": "https://www.beilstein-journals.org/bjoc/content/pdf/1860-5397-14-170.pdf",
+  "doi": "10.3762/bjoc.14.170",
+  "itemTitle": "Synthesis and characterization of π–extended “earring” subporphyrins",
+  "meta": {
+    "citation_journal_title": "Beilstein Journal of Organic Chemistry",
+    "citation_id": "1860-5397-14-170"
+  },
+  "files": [
+    {
+      "title": "Supporting Information File 1:",
+      "description": "Experimental part.",
+      "format": "PDF",
+      "size": "1.5 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-14-170-S1.pdf"
+    },
+    {
+      "title": "Supporting Information File 2:",
+      "description": "Crystallographic information file of compound 3.",
+      "format": "CIF",
+      "size": "34.9 KB",
+      "href": "/bjoc/content/supplementary/1860-5397-14-170-S2.cif"
+    },
+    {
+      "title": "Supporting Information File 3:",
+      "description": "Crystallographic information file of compound 3Pd.",
+      "format": "CIF",
+      "size": "36.2 KB",
+      "href": "/bjoc/content/supplementary/1860-5397-14-170-S3.cif"
+    }
+  ]
+}

@@ -5,10 +5,10 @@
   "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
   "mergeCommit": "c376949763febbfb7a2814e80cf32b62d2aee227",
   "translatorPinCommit": "761b7eeb5ff472d485687822eb624f5e67e5c7b6",
-  "connector": "d6cf601d31f399fc137220cd4df7a85b8e9f7dc2",
-  "connectorZotero": "864706f4d5fa3bd6bafed80608f81f52079e4f1c",
+  "connector": "5469528007c74c6c3e365b6e3b176cd43e34dd66",
+  "connectorZotero": "b7a0f1bab34b249779f2214990922d117defe238",
   "documentWorker": "731026106dabe56aef921351b7c3480678ee25fc",
-  "translators": "d61d1c0be074711d50405bc4cdd6b0fdf5899e02",
+  "translators": "4e4574c0ee1b468191aa8de2214c2a4332892bff",
   "workerBundlePrerequisite": "6d0c0ce45d96a4ed5b697927306b1e9207a02041",
   "lockfileSHA256": {
     "desktop": "439557d300fd590b8e9cf1004f055fd6ece636647c7ec25e9132e6e9e36c6585",
@@ -20,7 +20,7 @@
   "validatedIntegration": "c3d91b11a0e685af7f225b4591ac77ed936ab326",
   "connectorFeatureSource": "4c0baf1a7a975b31867eb9a1280aaf5a3fdd9925",
   "masterGuide": "AGENTS.md",
-  "completionStatus": "collection-hierarchy-config-editor-tested-journal-rollout-in-progress",
+  "completionStatus": "requested-feature-update-and-capped-journal-batch-reviewed; packaging-in-progress",
   "zoteroMergeBaseline": {
     "desktop": "637a88cca9c415504b094e41c48c0eb51a8dfbaa",
     "connector": "659335473613664bfef3d08e64fe52d7c80e1005"

@@ -1,0 +1,19 @@
+{
+  "url": "https://www.beilstein-journals.org/bjoc/articles/20/95",
+  "mainPDF": "https://www.beilstein-journals.org/bjoc/content/pdf/1860-5397-20-95.pdf",
+  "doi": "10.3762/bjoc.20.95",
+  "itemTitle": "Light on the sustainable preparation of aryl-cored dibromides",
+  "meta": {
+    "citation_journal_title": "Beilstein Journal of Organic Chemistry",
+    "citation_id": "1860-5397-20-95"
+  },
+  "files": [
+    {
+      "title": "Supporting Information File 1:",
+      "description": "Addtional figures and tables and copies of spectra.",
+      "format": "PDF",
+      "size": "1.0 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-20-95-S1.pdf"
+    }
+  ]
+}

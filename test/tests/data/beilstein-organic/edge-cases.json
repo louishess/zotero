@@ -1,0 +1,75 @@
+{
+  "url": "https://www.beilstein-journals.org/bjoc/articles/20/95",
+  "mainPDF": "https://www.beilstein-journals.org/bjoc/content/pdf/1860-5397-20-95.pdf",
+  "doi": "10.3762/bjoc.20.95",
+  "itemTitle": "Light on the sustainable preparation of aryl-cored dibromides",
+  "meta": {
+    "citation_journal_title": "Beilstein Journal of Organic Chemistry",
+    "citation_id": "1860-5397-20-95"
+  },
+  "files": [
+    {
+      "title": "Supporting Information File 1:",
+      "description": "Archive.",
+      "format": "ZIP",
+      "size": "2.0 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-20-95-S2.zip?token=keep-me#fragment"
+    },
+    {
+      "title": "Supporting Information File 2:",
+      "description": "Unknown binary.",
+      "format": "BIN",
+      "size": "3.0 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-20-95-S3.bin?download=raw.pdf"
+    },
+    {
+      "title": "Supporting Information File 3:",
+      "description": "Duplicate URL.",
+      "format": "ZIP",
+      "size": "2.0 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-20-95-S2.zip?token=keep-me"
+    },
+    {
+      "title": "Supporting Information File 4:",
+      "description": "Other host.",
+      "format": "PDF",
+      "size": "1.0 MB",
+      "href": "https://example.invalid/bjoc/content/supplementary/1860-5397-20-95-S4.pdf"
+    },
+    {
+      "title": "Supporting Information File 5:",
+      "description": "Cited article.",
+      "format": "PDF",
+      "size": "1.0 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-20-94-S1.pdf"
+    },
+    {
+      "title": "Supporting Information File 6:",
+      "description": "Bad scheme.",
+      "format": "ZIP",
+      "size": "1.0 MB",
+      "href": "javascript:void(0)"
+    },
+    {
+      "title": "Supporting Information File 7:",
+      "description": "Credentialed URL.",
+      "format": "PDF",
+      "size": "1.0 MB",
+      "href": "https://user:pass@www.beilstein-journals.org/bjoc/content/supplementary/1860-5397-20-95-S4.pdf"
+    },
+    {
+      "title": "Supporting Information File 8:",
+      "description": "Unexpected port.",
+      "format": "PDF",
+      "size": "1.0 MB",
+      "href": "https://www.beilstein-journals.org:8443/bjoc/content/supplementary/1860-5397-20-95-S5.pdf"
+    },
+    {
+      "title": "Supporting Information File 9:",
+      "description": "Nested viewer path.",
+      "format": "PDF",
+      "size": "1.0 MB",
+      "href": "/bjoc/content/supplementary/1860-5397-20-95-S6.pdf/view"
+    }
+  ]
+}
