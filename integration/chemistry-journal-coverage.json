@@ -7,20 +7,23 @@
       "issns": [],
       "translatorCandidate": "ACS Publications.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/acs-jacs-supplementary/evidence.md"
+      ],
+      "blocker": "Live Connector-to-Desktop transfer has not passed for this journal.",
+      "lastTestedRevision": "2ec6d2c02b7ee8c36ac02d95efc79b44200a7865"
     },
     {
       "title": "Journal of Organic Chemistry",
       "issns": [],
       "translatorCandidate": "ACS Publications.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -374,13 +377,16 @@
       "issns": [],
       "translatorCandidate": "Springer Link.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/analytical-bioanalytical-chemistry/evidence.md"
+      ],
+      "blocker": "Live Connector-to-Desktop transfer has not passed for this journal.",
+      "lastTestedRevision": "2ec6d2c02b7ee8c36ac02d95efc79b44200a7865"
     },
     {
       "title": "Journal of Materials Science",
@@ -535,7 +541,7 @@
       "issns": [],
       "translatorCandidate": null,
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
