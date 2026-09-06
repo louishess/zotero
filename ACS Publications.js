@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2026-08-08 16:45:00"
+	"lastUpdated": "2026-09-06 00:00:00"
 }
 
 /*
@@ -116,7 +116,7 @@ function getPageSupplements(doc, supplementAsLink = false) {
 
 		let pathname = new URL(url).pathname;
 		let formatMatch = pathname.match(/\/article-supplement\/[^/]+\/([^/]+)\//);
-		let extensionMatch = pathname.match(/\.([^.\/]+)$/);
+		let extensionMatch = pathname.match(/\.([^./]+)$/);
 		let ext = (formatMatch && formatMatch[1]
 			|| extensionMatch && extensionMatch[1]
 			|| '').toLowerCase();
@@ -137,27 +137,53 @@ function getPageSupplements(doc, supplementAsLink = false) {
 }
 
 async function getFigshareSupplements(doi) {
+	let normalizedDOI = doi.toLowerCase();
 	let records = await requestJSON('https://api.figshare.com/v2/articles/search', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ resource_doi: doi })
+		body: JSON.stringify({ resource_doi: doi }) // eslint-disable-line camelcase
 	});
-	records = records.filter(record => record.resource_doi === doi);
-	records.sort((a, b) => {
+	if (!Array.isArray(records)) {
+		Z.debug(`ACS Publications: malformed Figshare supplementary response for ${doi}; preserving page supplements`);
+		return null;
+	}
+	let matchedRecords = records.filter(record => record && typeof record.resource_doi === 'string'
+		&& record.resource_doi.toLowerCase() === normalizedDOI);
+	if (matchedRecords.length > 2) {
+		Z.debug(`ACS Publications: Figshare supplementary record limit reached for ${doi}; preserving page supplements`);
+		return null;
+	}
+	if (matchedRecords.some(record => typeof record.doi !== 'string' || !isFigshareArticleURL(record.url))) {
+		Z.debug(`ACS Publications: malformed Figshare supplementary record for ${doi}; preserving page supplements`);
+		return null;
+	}
+	let seenDetailURLs = new Set();
+	matchedRecords = matchedRecords.filter((record) => {
+		if (seenDetailURLs.has(record.url)) return false;
+		seenDetailURLs.add(record.url);
+		return true;
+	});
+	matchedRecords.sort((a, b) => {
 		let aNumber = parseInt((a.doi.match(/\.s(\d+)$/i) || [])[1]) || 0;
 		let bNumber = parseInt((b.doi.match(/\.s(\d+)$/i) || [])[1]) || 0;
 		return aNumber - bNumber;
 	});
 
-	let details = await Promise.all(records.map(record => requestJSON(record.url)));
+	let details = await Promise.all(matchedRecords.map(record => requestJSON(record.url)));
 	let supplements = [];
 	let seenURLs = new Set();
 	for (let detail of details) {
+		if (!detail || typeof detail !== 'object' || !Array.isArray(detail.files)
+			|| (detail.resource_doi && (typeof detail.resource_doi !== 'string'
+			|| detail.resource_doi.toLowerCase() !== normalizedDOI))) {
+			Z.debug(`ACS Publications: malformed Figshare supplementary detail for ${doi}; preserving page supplements`);
+			return null;
+		}
 		for (let file of detail.files || []) {
-			if (!file.download_url || seenURLs.has(file.download_url)) continue;
+			if (!file || typeof file.download_url !== 'string' || seenURLs.has(file.download_url)) continue;
 			seenURLs.add(file.download_url);
-			let extension = file.name && file.name.match(/\.([^.]+)$/);
-			let mimeType = file.mimetype
+			let extension = typeof file.name === 'string' && file.name.match(/\.([^.]+)$/);
+			let mimeType = (typeof file.mimetype === 'string' && file.mimetype)
 				|| extension && suppTypeMap[extension[1].toLowerCase()];
 			let attachment = {
 				title: `Supplement ${supplements.length + 1}`,
@@ -171,13 +197,27 @@ async function getFigshareSupplements(doi) {
 	return supplements;
 }
 
+function isFigshareArticleURL(url) {
+	try {
+		let urlObj = new URL(url);
+		return (urlObj.protocol === 'http:' || urlObj.protocol === 'https:')
+			&& urlObj.hostname === 'api.figshare.com'
+			&& !urlObj.username && !urlObj.password && !urlObj.port
+			&& /^\/v2\/articles\/\d+$/.test(urlObj.pathname)
+			&& !urlObj.search && !urlObj.hash;
+	}
+	catch (e) {
+		return false;
+	}
+}
+
 async function getSupplements(doc, doi, supplementAsLink = false) {
 	let pageSupplements = getPageSupplements(doc, supplementAsLink);
 	if (supplementAsLink || !doi) return pageSupplements;
 
 	try {
 		let figshareSupplements = await getFigshareSupplements(doi);
-		if (figshareSupplements.length) return figshareSupplements;
+		if (figshareSupplements && figshareSupplements.length) return figshareSupplements;
 	}
 	catch (e) {
 		Z.debug(`ACS Publications: Figshare supplementary lookup failed for ${doi}`);
