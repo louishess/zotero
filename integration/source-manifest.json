@@ -1,14 +1,14 @@
 {
-  "scope": "ZoteroMerge: SI downloads, three-mode PDF annotations, built-in citation cloud folders for all downloaded article files, and per-type automatic-download controls",
+  "scope": "ZoteroMerge: SI downloads, three-mode PDF annotations, citation cloud folders mirroring collections, per-type download controls, and searchable Config Editor",
   "branch": "ZoteroMerge",
   "annotationBase": "52ac324e2bc9ed3df7726bd098997155293bf4ac",
   "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
   "mergeCommit": "c376949763febbfb7a2814e80cf32b62d2aee227",
   "translatorPinCommit": "761b7eeb5ff472d485687822eb624f5e67e5c7b6",
-  "connector": "c85b868c3507720d0317c5861fb308756e734971",
-  "connectorZotero": "4c05017a60b7f418ead44467225ac78c31559c23",
+  "connector": "9cfce3eef4c750a49a594cc7e9a0bb1b936b73dc",
+  "connectorZotero": "bb49ec5ccb961ce6726e968925e23b23b8aabc2e",
   "documentWorker": "731026106dabe56aef921351b7c3480678ee25fc",
-  "translators": "e10dc0509aebd908353c71ac4831e94a3f666ffd",
+  "translators": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab",
   "workerBundlePrerequisite": "6d0c0ce45d96a4ed5b697927306b1e9207a02041",
   "lockfileSHA256": {
     "desktop": "439557d300fd590b8e9cf1004f055fd6ece636647c7ec25e9132e6e9e36c6585",

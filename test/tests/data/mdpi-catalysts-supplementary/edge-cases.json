@@ -1,0 +1,83 @@
+{
+  "url": "https://www.mdpi.com/2073-4344/16/9/804",
+  "entries": [
+    {
+      "heading": "Supplementary File 1:",
+      "text": "same.zip",
+      "entryText": "Supplementary File 1: same.zip (ZIP, 1 KB)",
+      "href": "/2073-4344/16/9/804/data.zip?version=signed-one"
+    },
+    {
+      "heading": "Supplementary File 2:",
+      "text": "same.zip",
+      "entryText": "Supplementary File 2: same.zip (ZIP, 2 KB)",
+      "href": "/2073-4344/16/9/804/s2?version=signed-two"
+    },
+    {
+      "heading": "Supplementary File 3:",
+      "text": "Raw binary",
+      "entryText": "Supplementary File 3: Raw binary",
+      "href": "/2073-4344/16/9/804/s3?download=raw.pdf&signature=keep-me#fragment"
+    },
+    {
+      "heading": "Supplementary File 4:",
+      "text": "structure.cif",
+      "entryText": "Supplementary File 4: structure.cif (CIF, 4 KB)",
+      "href": "/2073-4344/16/9/804/structure.cif?version=chemical"
+    },
+    {
+      "heading": "Supplementary File 5:",
+      "text": "spectrum.mzML",
+      "entryText": "Supplementary File 5: spectrum.mzML (MZML, 9 KB)",
+      "href": "/2073-4344/16/9/804/spectrum.mzML?version=chemical"
+    },
+    {
+      "heading": "Supplementary File 6:",
+      "text": "unknown.chemdata",
+      "entryText": "Supplementary File 6: unknown.chemdata",
+      "href": "/2073-4344/16/9/804/unknown.chemdata?version=unknown"
+    },
+    {
+      "heading": "Supplementary File 7:",
+      "text": "Bad scheme",
+      "entryText": "Supplementary File 7: Bad scheme (ZIP, 1 KB)",
+      "href": "javascript:void(0)"
+    },
+    {
+      "heading": "Supplementary File 8:",
+      "text": "Other host",
+      "entryText": "Supplementary File 8: Other host (ZIP, 1 KB)",
+      "href": "https://example.invalid/s8.zip"
+    },
+    {
+      "heading": "Other link",
+      "text": "Article landing page",
+      "entryText": "Article landing page",
+      "href": "/article/10.3390/catal16090804/s1"
+    },
+    {
+      "heading": "Landing page with file label",
+      "text": "Article landing page",
+      "entryText": "Article landing page (ZIP, 1 KB)",
+      "href": "/article/10.3390/catal16090804/s1"
+    },
+    {
+      "heading": "HTML viewer",
+      "text": "HTML viewer",
+      "entryText": "HTML viewer (ZIP, 1 KB)",
+      "href": "/2073-4344/16/9/804/view.html"
+    },
+    {
+      "heading": "PHP viewer",
+      "text": "PHP viewer",
+      "entryText": "PHP viewer (ZIP, 1 KB)",
+      "href": "/download.php?file=s1"
+    },
+    {
+      "heading": "Cited article SI",
+      "text": "Cited article SI",
+      "entryText": "Cited article SI (ZIP, 1 KB)",
+      "href": "/2073-4344/16/9/803/s1?version=cited"
+    }
+  ]
+}

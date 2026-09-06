@@ -7,7 +7,7 @@
       "issns": [],
       "translatorCandidate": "ACS Publications.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -59,7 +59,7 @@
       "issns": [],
       "translatorCandidate": "RSC Publishing.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -293,13 +293,16 @@
       "issns": [],
       "translatorCandidate": "ScienceDirect.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
+      "status": "access-blocked",
       "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "discoveryStatus": "access-blocked",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "../ZoteroCombinedConnector/test/tests/fixtures/sciencedirectTetrahedronEvidence.md"
+      ],
+      "blocker": "Current article DOM challenged; only synthetic legacy extraction regression passed, not current-layout or no-SI verification.",
+      "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
       "title": "Talanta",
@@ -371,7 +374,7 @@
       "issns": [],
       "translatorCandidate": "Springer Link.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -384,13 +387,16 @@
       "issns": [],
       "translatorCandidate": "Springer Link.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/journal-materials-science/evidence.md"
+      ],
+      "blocker": "Three observed video iframes have no verified direct file route; live byte transfer pending.",
+      "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
       "title": "Theoretical Chemistry Accounts",
@@ -422,24 +428,26 @@
         "https://www.mdpi.com/1420-3049/31/17/3113"
       ],
       "evidence": [
-        "test/tests/data/mdpi-molecules-supplementary/EVIDENCE.md",
-        "test/tests/MDPIMoleculesSupplementaryTest.mjs"
+        "test/tests/data/mdpi-molecules-supplementary/evidence.md"
       ],
       "blocker": null,
-      "lastTestedRevision": "e10dc0509aebd908353c71ac4831e94a3f666ffd"
+      "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
       "title": "Catalysts",
       "issns": [],
       "translatorCandidate": "MDPI Journals.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/mdpi-catalysts-supplementary/evidence.md"
+      ],
+      "blocker": null,
+      "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
       "title": "Polymers",
@@ -498,13 +506,16 @@
       "issns": [],
       "translatorCandidate": "Frontiers.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/frontiers-chemistry-supplementary/evidence.md"
+      ],
+      "blocker": "Legacy API returned404; other historical file routes and live byte transfer unverified.",
+      "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
       "title": "Frontiers in Materials",
