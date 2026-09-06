@@ -23,20 +23,23 @@
       "issns": [],
       "translatorCandidate": "ACS Publications.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/acs-joc-supplementary/evidence.md"
+      ],
+      "blocker": null,
+      "lastTestedRevision": "d61d1c0be074711d50405bc4cdd6b0fdf5899e02"
     },
     {
       "title": "Organic Letters",
       "issns": [],
       "translatorCandidate": "ACS Publications.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -62,13 +65,16 @@
       "issns": [],
       "translatorCandidate": "RSC Publishing.js",
       "source": "TranslatorAgents.md",
-      "status": "in-progress",
-      "metadataStatus": "uninspected",
-      "discoveryStatus": "uninspected",
+      "status": "fixture-passed",
+      "metadataStatus": "fixture-passed",
+      "discoveryStatus": "fixture-passed",
       "transferStatus": "uninspected",
       "controls": [],
-      "evidence": [],
-      "blocker": null
+      "evidence": [
+        "test/tests/data/rsc-chemical-science/evidence.md"
+      ],
+      "blocker": null,
+      "lastTestedRevision": "d61d1c0be074711d50405bc4cdd6b0fdf5899e02"
     },
     {
       "title": "Chemical Communications",
@@ -393,15 +399,17 @@
       "issns": [],
       "translatorCandidate": "Springer Link.js",
       "source": "TranslatorAgents.md",
-      "status": "fixture-passed",
+      "status": "transfer-passed",
       "metadataStatus": "fixture-passed",
       "discoveryStatus": "fixture-passed",
-      "transferStatus": "uninspected",
+      "transferStatus": "transfer-passed",
       "controls": [],
       "evidence": [
-        "test/tests/data/journal-materials-science/evidence.md"
+        "test/tests/data/journal-materials-science/evidence.md",
+        "../combined-review/journal-rollout-browser-transfer-final.log",
+        "../combined-review/journal-rollout-transfer-audit.json"
       ],
-      "blocker": "Three observed video iframes have no verified direct file route; live byte transfer pending.",
+      "blocker": "One positive current-layout article passed main+SI byte transfer; other layouts remain unverified. Three older-control video iframes lack verified download routes.",
       "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
@@ -427,7 +435,7 @@
       "status": "fixture-passed",
       "metadataStatus": "fixture-passed",
       "discoveryStatus": "fixture-passed",
-      "transferStatus": "uninspected",
+      "transferStatus": "access-blocked",
       "controls": [
         "https://www.mdpi.com/1420-3049/31/17/3117",
         "https://www.mdpi.com/1420-3049/23/10/2454",
@@ -436,7 +444,7 @@
       "evidence": [
         "test/tests/data/mdpi-molecules-supplementary/evidence.md"
       ],
-      "blocker": null,
+      "blocker": "Isolated Chromium returned Access Denied; actual DOM evidence and fixture tests pass, byte transfer not verified.",
       "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
@@ -447,12 +455,12 @@
       "status": "fixture-passed",
       "metadataStatus": "fixture-passed",
       "discoveryStatus": "fixture-passed",
-      "transferStatus": "uninspected",
+      "transferStatus": "access-blocked",
       "controls": [],
       "evidence": [
         "test/tests/data/mdpi-catalysts-supplementary/evidence.md"
       ],
-      "blocker": null,
+      "blocker": "Isolated Chromium returned Access Denied; actual DOM evidence and fixture tests pass, byte transfer not verified.",
       "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {
@@ -460,7 +468,7 @@
       "issns": [],
       "translatorCandidate": "MDPI Journals.js",
       "source": "TranslatorAgents.md",
-      "status": "uninspected",
+      "status": "in-progress",
       "metadataStatus": "uninspected",
       "discoveryStatus": "uninspected",
       "transferStatus": "uninspected",
@@ -512,15 +520,17 @@
       "issns": [],
       "translatorCandidate": "Frontiers.js",
       "source": "TranslatorAgents.md",
-      "status": "fixture-passed",
+      "status": "transfer-passed",
       "metadataStatus": "fixture-passed",
       "discoveryStatus": "fixture-passed",
-      "transferStatus": "uninspected",
+      "transferStatus": "transfer-passed",
       "controls": [],
       "evidence": [
-        "test/tests/data/frontiers-chemistry-supplementary/evidence.md"
+        "test/tests/data/frontiers-chemistry-supplementary/evidence.md",
+        "../combined-review/journal-rollout-browser-transfer-final.log",
+        "../combined-review/journal-rollout-transfer-audit.json"
       ],
-      "blocker": "Legacy API returned404; other historical file routes and live byte transfer unverified.",
+      "blocker": "One positive current-layout article passed main+SI byte transfer; other layouts remain unverified. Historical API routes remain unverified.",
       "lastTestedRevision": "a79cb5868fb40153c7f052ee82e5b95bf1b452ab"
     },
     {

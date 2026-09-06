@@ -1,0 +1,11 @@
+# Journal of Organic Chemistry supplementary evidence
+
+Observed 2026-09-05 in the Codex in-app browser on ACS Publications. These are browser DOM observations and do not claim a successful Connector-to-Desktop byte-transfer run.
+
+- `https://pubs.acs.org/joceah/article-abstract/doi/10.1021/acs.joc.6c01428/5421807/Methyl-thianthrenium-Salt-Assisted-Metal-Free?redirectedFrom=fulltext` (DOI `10.1021/acs.joc.6c01428`, article dated September 05, 2026): the loaded page exposed `meta[name="citation_doi"] = 10.1021/acs.joc.6c01428`, a `Supporting Information` section, and one direct anchor with `data-doctype="dataSupplementDoc"`, `aria-label="Download sifile1"`, and href `https://pubs.acs.org/joceah/article-supplement/5421807/pdf/jo6c01428_si_001/`. The page displayed ordinary ACS purchase/access messaging.
+- `https://pubs.acs.org/joceah/article/91/23/7607/5186471/Trials-into-Triumphs-The-Emergence-of-a-Concise` (DOI `10.1021/acs.joc.5c02924`, article dated April 16, 2026): the loaded free-to-read page exposed the same observed `data-doctype="dataSupplementDoc"` anchor at `https://pubs.acs.org/joceah/article-supplement/5186471/pdf/jo5c02924_si_001/`. A direct DOM read returned one anchor with `aria-label="Download sifile1"`.
+- `https://pubs.acs.org/joceah/article-abstract/90/20/6617/3644555/Photoactivation-of-Thianthrenium-Salts-An-Electron?redirectedFrom=fulltext` (DOI `10.1021/acs.joc.5c00194`, article dated May 14, 2025): the loaded Perspective page exposed no `Supporting Information` heading/section and no `a[data-doctype="dataSupplementDoc"]` anchor. This is the verified no-SI control; it displayed ordinary ACS purchase/access messaging rather than a CAPTCHA or challenge.
+
+The production fixtures preserve the exact observed article URLs and direct SI routes. Figshare manifest, API failure, signed-query, duplicate-name, oversized-manifest, and unknown chemical/code cases in `ACSJOCSupplementaryTest.mjs` are synthetic helper/API responses; they do not represent live file-transfer evidence. No CAPTCHA or challenge bypass was attempted.
+
+The ACS Figshare fallback remains bounded to one search plus at most two unique detail records per article. The test keeps this cap and verifies that unknown chemical and code files remain URL-only links without guessed MIME types.

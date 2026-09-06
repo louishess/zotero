@@ -1,0 +1,53 @@
+{
+  "name": "Improving reproducibility through condition-based sensitivity assessments: edge cases",
+  "doi": "10.1039/D4SC03017F",
+  "canonicalURL": "https://pubs.rsc.org/sc/article/15/36/14548/869332/Improving-reproducibility-through-condition-based",
+  "primaryPDF": "https://pubs.rsc.org/sc/article-pdf/15/36/14548/10035908/d4sc03017f.pdf",
+  "supplements": [
+    {
+      "href": "https://pubs.rsc.org/sc/article-supplement/869332/xlsx/d4sc03017f1_suppl/?token=one",
+      "text": "Supplementary information (XLSX)",
+      "parentText": "Supplementary information (XLSX) - xlsx file"
+    },
+    {
+      "href": "https://pubs.rsc.org/sc/article-supplement/869332/xlsx/d4sc03017f1_suppl/?token=one#duplicate",
+      "text": "Supplementary information (XLSX)",
+      "parentText": "Supplementary information (XLSX) - xlsx file"
+    },
+    {
+      "href": "https://pubs.rsc.org/sc/article-supplement/869332/xlsx/d4sc03017f1_suppl/?token=two",
+      "text": "Supplementary information (XLSX)",
+      "parentText": "Supplementary information (XLSX) - xlsx file"
+    },
+    {
+      "href": "https://pubs.rsc.org/sc/article-supplement/869332/cif/d4sc03017f1_data/",
+      "text": "Supplementary information (CIF)",
+      "parentText": "Supplementary information (CIF) - cif file"
+    },
+    {
+      "href": "https://pubs.rsc.org/sc/article-supplement/827846/pdf/d3sc05729a1_suppl/",
+      "text": "Supplementary information (PDF)",
+      "parentText": "Supplementary information (PDF) - pdf file"
+    },
+    {
+      "href": "https://cdn.example.test/sc/article-supplement/869332/pdf/foreign/",
+      "text": "Supplementary information (PDF)",
+      "parentText": "Supplementary information (PDF) - pdf file"
+    },
+    {
+      "href": "javascript:alert('ignored')",
+      "text": "Supplementary information (PDF)",
+      "parentText": "Supplementary information (PDF) - pdf file"
+    },
+    {
+      "href": "https://user:pass@pubs.rsc.org/sc/article-supplement/869332/pdf/private/",
+      "text": "Supplementary information (PDF)",
+      "parentText": "Supplementary information (PDF)"
+    },
+    {
+      "href": "https://pubs.rsc.org:8443/sc/article-supplement/869332/pdf/port/",
+      "text": "Supplementary information (PDF)",
+      "parentText": "Supplementary information (PDF)"
+    }
+  ]
+}
