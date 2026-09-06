@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<?xml-stylesheet href="chrome://zotero/content/preferences/configEditor.css" type="text/css"?>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+	xmlns:html="http://www.w3.org/1999/xhtml" windowtype="zotero:configEditor"
+	width="1000" height="750" persist="screenX screenY width height sizemode"
+	onload="Zotero_ConfigEditor.init()" onunload="Zotero_ConfigEditor.uninit()">
+	<linkset><html:link rel="localization" href="preferences.ftl"/></linkset>
+	<script src="chrome://zotero/content/include.js"/>
+	<script src="configEditor.js"/>
+	<keyset><key key="w" modifiers="accel" oncommand="window.close()"/></keyset>
+	<html:main>
+		<html:header>
+			<html:h1 data-l10n-id="config-editor-title"/>
+			<html:p data-l10n-id="config-editor-intro"/>
+		</html:header>
+		<html:div class="toolbar">
+			<html:input id="search" type="search" data-l10n-id="config-editor-search"/>
+			<html:select id="scope" data-l10n-id="config-editor-scope">
+				<html:option value="all" data-l10n-id="config-editor-all"/>
+				<html:option value="zotero" data-l10n-id="config-editor-zotero"/>
+				<html:option value="modified" data-l10n-id="config-editor-modified"/>
+				<html:option value="optional" data-l10n-id="config-editor-optional"/>
+			</html:select>
+		</html:div>
+		<html:p id="count" role="status"/>
+		<html:div id="error" role="alert" hidden="hidden"/>
+		<html:section id="settings" data-l10n-id="config-editor-settings"/>
+		<html:button id="more" data-l10n-id="config-editor-more"/>
+		<html:details id="add-setting">
+			<html:summary data-l10n-id="config-editor-add"/>
+			<html:form id="add-form" class="toolbar">
+				<html:input id="new-name" required="required" data-l10n-id="config-editor-new-name"/>
+				<html:select id="new-type" data-l10n-id="config-editor-type">
+					<html:option value="boolean" data-l10n-id="config-editor-boolean"/>
+					<html:option value="string" data-l10n-id="config-editor-string"/>
+					<html:option value="number" data-l10n-id="config-editor-number"/>
+				</html:select>
+				<html:input id="new-value" required="required" data-l10n-id="config-editor-new-value"/>
+				<html:button type="submit" data-l10n-id="config-editor-save"/>
+			</html:form>
+		</html:details>
+	</html:main>
+</window>

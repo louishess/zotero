@@ -1,0 +1,704 @@
+[
+	{
+		"name": "bidi.browser.ui",
+		"type": "boolean"
+	},
+	{
+		"name": "browser.dom.window.dump.enabled"
+	},
+	{
+		"name": "extensions.zotero.annotations.noteTemplates.highlight"
+	},
+	{
+		"name": "extensions.zotero.annotations.noteTemplates.note"
+	},
+	{
+		"name": "extensions.zotero.annotations.noteTemplates.title"
+	},
+	{
+		"name": "extensions.zotero.api.url"
+	},
+	{
+		"name": "extensions.zotero.architecture.warning.lastDisplayed"
+	},
+	{
+		"name": "extensions.zotero.automaticScraperUpdates"
+	},
+	{
+		"name": "extensions.zotero.automaticSnapshots"
+	},
+	{
+		"name": "extensions.zotero.automaticTags"
+	},
+	{
+		"name": "extensions.zotero.autoRecognizeFiles"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles.bannerDisplayTime"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles.bannerShown",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles.done",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles.fileTypes"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles.linked"
+	},
+	{
+		"name": "extensions.zotero.autoRenameFiles.onMetadataChange"
+	},
+	{
+		"name": "extensions.zotero.backup.interval"
+	},
+	{
+		"name": "extensions.zotero.backup.numBackups"
+	},
+	{
+		"name": "extensions.zotero.baseAttachmentPath",
+		"type": "string"
+	},
+	{
+		"name": "extensions.zotero.browserRequest.onLoadTimeout"
+	},
+	{
+		"name": "extensions.zotero.browserRequest.timeout"
+	},
+	{
+		"name": "extensions.zotero.capitalizeTitles"
+	},
+	{
+		"name": "extensions.zotero.cite.automaticJournalAbbreviations"
+	},
+	{
+		"name": "extensions.zotero.cite.useCiteprocRs"
+	},
+	{
+		"name": "extensions.zotero.dataDir"
+	},
+	{
+		"name": "extensions.zotero.debug.level"
+	},
+	{
+		"name": "extensions.zotero.debug.log"
+	},
+	{
+		"name": "extensions.zotero.debug.log.slowTime"
+	},
+	{
+		"name": "extensions.zotero.debug.memoryInfo",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.debug.stackTrace"
+	},
+	{
+		"name": "extensions.zotero.debug.store",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.debug.store.limit"
+	},
+	{
+		"name": "extensions.zotero.debug.store.submitLineLength"
+	},
+	{
+		"name": "extensions.zotero.debug.store.submitSize"
+	},
+	{
+		"name": "extensions.zotero.documentCitations.lastAddToTarget"
+	},
+	{
+		"name": "extensions.zotero.downloadAssociatedFiles"
+	},
+	{
+		"name": "extensions.zotero.export.bibliographyLocale"
+	},
+	{
+		"name": "extensions.zotero.export.bibliographySettings"
+	},
+	{
+		"name": "extensions.zotero.export.citePaperJournalArticleURL"
+	},
+	{
+		"name": "extensions.zotero.export.displayCharsetOption"
+	},
+	{
+		"name": "extensions.zotero.export.lastLocale"
+	},
+	{
+		"name": "extensions.zotero.export.lastStyle"
+	},
+	{
+		"name": "extensions.zotero.export.noteQuickCopy.setting"
+	},
+	{
+		"name": "extensions.zotero.export.quickCopy.dragLimit"
+	},
+	{
+		"name": "extensions.zotero.export.quickCopy.locale"
+	},
+	{
+		"name": "extensions.zotero.export.quickCopy.setting"
+	},
+	{
+		"name": "extensions.zotero.fallbackSort"
+	},
+	{
+		"name": "extensions.zotero.feeds.defaultCleanupReadAfter"
+	},
+	{
+		"name": "extensions.zotero.feeds.defaultCleanupUnreadAfter"
+	},
+	{
+		"name": "extensions.zotero.feeds.defaultTTL"
+	},
+	{
+		"name": "extensions.zotero.feeds.lastTranslationTarget"
+	},
+	{
+		"name": "extensions.zotero.feeds.sortAscending"
+	},
+	{
+		"name": "extensions.zotero.findPDFs.resolvers"
+	},
+	{
+		"name": "extensions.zotero.firstRun"
+	},
+	{
+		"name": "extensions.zotero.firstRun2",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.firstRunGuidance"
+	},
+	{
+		"name": "extensions.zotero.firstRunGuidanceShown.citationDialog"
+	},
+	{
+		"name": "extensions.zotero.firstRunGuidanceShown.z7Banner",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.fontSize",
+		"type": "string"
+	},
+	{
+		"name": "extensions.zotero.fulltext.pdfMaxPages"
+	},
+	{
+		"name": "extensions.zotero.fulltext.textMaxLength"
+	},
+	{
+		"name": "extensions.zotero.groups.copyAnnotations"
+	},
+	{
+		"name": "extensions.zotero.groups.copyChildFileAttachments"
+	},
+	{
+		"name": "extensions.zotero.groups.copyChildLinks"
+	},
+	{
+		"name": "extensions.zotero.groups.copyChildNotes"
+	},
+	{
+		"name": "extensions.zotero.groups.copyTags"
+	},
+	{
+		"name": "extensions.zotero.hiddenNotices"
+	},
+	{
+		"name": "extensions.zotero.hideContextAnnotationRows"
+	},
+	{
+		"name": "extensions.zotero.httpServer.enabled",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.httpServer.localAPI.enabled"
+	},
+	{
+		"name": "extensions.zotero.httpServer.port"
+	},
+	{
+		"name": "extensions.zotero.import.charset"
+	},
+	{
+		"name": "extensions.zotero.import.createCollection"
+	},
+	{
+		"name": "extensions.zotero.import.createNewCollection.fromFileOpenHandler"
+	},
+	{
+		"name": "extensions.zotero.import.fileHandling"
+	},
+	{
+		"name": "extensions.zotero.import.mendeleyUseOAuth",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.integration.annotationDialogIncludeComments"
+	},
+	{
+		"name": "extensions.zotero.integration.citationDialog.windowParams"
+	},
+	{
+		"name": "extensions.zotero.integration.citationDialogCollectionLastSelected"
+	},
+	{
+		"name": "extensions.zotero.integration.citationDialogLastUsedMode"
+	},
+	{
+		"name": "extensions.zotero.integration.citationDialogMode"
+	},
+	{
+		"name": "extensions.zotero.integration.citationDialogShowLocatorTip",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.integration.citationPreviewShown"
+	},
+	{
+		"name": "extensions.zotero.integration.dontPromptMendeleyImport",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.integration.keepAddCitationDialogRaised"
+	},
+	{
+		"name": "extensions.zotero.integration.updateTemplateDelayedOn"
+	},
+	{
+		"name": "extensions.zotero.integration.upgradeTemplateDelayedOn"
+	},
+	{
+		"name": "extensions.zotero.itemPaneHeader"
+	},
+	{
+		"name": "extensions.zotero.itemPaneHeader.bibEntry.locale"
+	},
+	{
+		"name": "extensions.zotero.keys.copySelectedItemCitationsToClipboard"
+	},
+	{
+		"name": "extensions.zotero.keys.copySelectedItemsToClipboard"
+	},
+	{
+		"name": "extensions.zotero.keys.overrideGlobal"
+	},
+	{
+		"name": "extensions.zotero.lastCreatorFieldMode"
+	},
+	{
+		"name": "extensions.zotero.lastDataDir"
+	},
+	{
+		"name": "extensions.zotero.lastLongTagDelimiter"
+	},
+	{
+		"name": "extensions.zotero.lastLongTagMode"
+	},
+	{
+		"name": "extensions.zotero.lastSelectedPrefPane"
+	},
+	{
+		"name": "extensions.zotero.lastViewedFolder"
+	},
+	{
+		"name": "extensions.zotero.lastWebDAVOrphanPurge"
+	},
+	{
+		"name": "extensions.zotero.layout",
+		"type": "string"
+	},
+	{
+		"name": "extensions.zotero.linkedFolderAttachments.enabled"
+	},
+	{
+		"name": "extensions.zotero.linkedFolderAttachments.provider"
+	},
+	{
+		"name": "extensions.zotero.naturalSorting"
+	},
+	{
+		"name": "extensions.zotero.newItemTypeMRU"
+	},
+	{
+		"name": "extensions.zotero.nextConnectorVersionWarning"
+	},
+	{
+		"name": "extensions.zotero.note.css"
+	},
+	{
+		"name": "extensions.zotero.note.fontFamily"
+	},
+	{
+		"name": "extensions.zotero.note.fontSize",
+		"type": "number"
+	},
+	{
+		"name": "extensions.zotero.note.smartQuotes"
+	},
+	{
+		"name": "extensions.zotero.note.tabFontSize",
+		"type": "number"
+	},
+	{
+		"name": "extensions.zotero.openNoteInNewWindow"
+	},
+	{
+		"name": "extensions.zotero.openReaderInNewWindow"
+	},
+	{
+		"name": "extensions.zotero.openURL.name"
+	},
+	{
+		"name": "extensions.zotero.openURL.resolver",
+		"type": "string"
+	},
+	{
+		"name": "extensions.zotero.pane.persist"
+	},
+	{
+		"name": "extensions.zotero.pinnedPane"
+	},
+	{
+		"name": "extensions.zotero.postUpgradeBannerVersionShown"
+	},
+	{
+		"name": "extensions.zotero.prefVersion.remote"
+	},
+	{
+		"name": "extensions.zotero.proxies.autoRecognize"
+	},
+	{
+		"name": "extensions.zotero.proxies.disableByDomain"
+	},
+	{
+		"name": "extensions.zotero.proxies.disableByDomainString"
+	},
+	{
+		"name": "extensions.zotero.proxies.showRedirectNotification"
+	},
+	{
+		"name": "extensions.zotero.proxies.transparent"
+	},
+	{
+		"name": "extensions.zotero.proxyAuthenticationURLs"
+	},
+	{
+		"name": "extensions.zotero.purge.creators",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.purge.items",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.purge.tags",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.reader.annotations.storageMode"
+	},
+	{
+		"name": "extensions.zotero.reader.autoDisableTool.image"
+	},
+	{
+		"name": "extensions.zotero.reader.autoDisableTool.note"
+	},
+	{
+		"name": "extensions.zotero.reader.autoDisableTool.text"
+	},
+	{
+		"name": "extensions.zotero.reader.darkTheme"
+	},
+	{
+		"name": "extensions.zotero.reader.ebookFontFamily"
+	},
+	{
+		"name": "extensions.zotero.reader.ebookHyphenate"
+	},
+	{
+		"name": "extensions.zotero.reader.lastSidebarTab"
+	},
+	{
+		"name": "extensions.zotero.reader.lightTheme"
+	},
+	{
+		"name": "extensions.zotero.reader.readAloud.highlightGranularity"
+	},
+	{
+		"name": "extensions.zotero.reader.readAloudVoices"
+	},
+	{
+		"name": "extensions.zotero.reader.textSelectionAnnotationMode"
+	},
+	{
+		"name": "extensions.zotero.recentSaveTargets"
+	},
+	{
+		"name": "extensions.zotero.recognize.url"
+	},
+	{
+		"name": "extensions.zotero.recursiveCollections"
+	},
+	{
+		"name": "extensions.zotero.reopenAccountPrefsOnRestart",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.report.combineChildItems"
+	},
+	{
+		"name": "extensions.zotero.report.includeAllChildItems"
+	},
+	{
+		"name": "extensions.zotero.reportTranslationFailure"
+	},
+	{
+		"name": "extensions.zotero.retractions.enabled"
+	},
+	{
+		"name": "extensions.zotero.retractions.recentItems"
+	},
+	{
+		"name": "extensions.zotero.rtfScan.lastInputFile"
+	},
+	{
+		"name": "extensions.zotero.rtfScan.lastOutputFile"
+	},
+	{
+		"name": "extensions.zotero.saveRelativeAttachmentPath",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.search.quicksearch-mode",
+		"type": "string"
+	},
+	{
+		"name": "extensions.zotero.search.useLeftBound"
+	},
+	{
+		"name": "extensions.zotero.services.url"
+	},
+	{
+		"name": "extensions.zotero.showAttachmentFilenames"
+	},
+	{
+		"name": "extensions.zotero.showAttachmentPreview"
+	},
+	{
+		"name": "extensions.zotero.showConnectorVersionWarning"
+	},
+	{
+		"name": "extensions.zotero.showPostUpgradeBanner"
+	},
+	{
+		"name": "extensions.zotero.showTrashWhenEmpty"
+	},
+	{
+		"name": "extensions.zotero.sidebarState"
+	},
+	{
+		"name": "extensions.zotero.sidenav.order"
+	},
+	{
+		"name": "extensions.zotero.sortAttachmentsChronologically"
+	},
+	{
+		"name": "extensions.zotero.sortCreatorAsString"
+	},
+	{
+		"name": "extensions.zotero.sortNotesChronologically"
+	},
+	{
+		"name": "extensions.zotero.sortNotesChronologically.reader"
+	},
+	{
+		"name": "extensions.zotero.sourceList.persist"
+	},
+	{
+		"name": "extensions.zotero.streaming.enabled"
+	},
+	{
+		"name": "extensions.zotero.streaming.url"
+	},
+	{
+		"name": "extensions.zotero.sync.autoSync"
+	},
+	{
+		"name": "extensions.zotero.sync.autoSync.backTimeout"
+	},
+	{
+		"name": "extensions.zotero.sync.autoSync.idleTimeout"
+	},
+	{
+		"name": "extensions.zotero.sync.debugNoAutoResetClient",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.sync.debugUploadPolicy",
+		"type": "number"
+	},
+	{
+		"name": "extensions.zotero.sync.fulltext.enabled"
+	},
+	{
+		"name": "extensions.zotero.sync.librariesToSkip"
+	},
+	{
+		"name": "extensions.zotero.sync.librariesToSync"
+	},
+	{
+		"name": "extensions.zotero.sync.reminder.autoSync.enabled",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.sync.reminder.autoSync.lastDisplayed"
+	},
+	{
+		"name": "extensions.zotero.sync.reminder.setUp.enabled",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.sync.reminder.setUp.lastDisplayed"
+	},
+	{
+		"name": "extensions.zotero.sync.server.compressData"
+	},
+	{
+		"name": "extensions.zotero.sync.server.username"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.downloadMode.groups"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.downloadMode.personal"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.enabled"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.groups.enabled"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.protocol"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.scheme"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.url"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.username"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.verified",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.watcher.fsEventsEventID"
+	},
+	{
+		"name": "extensions.zotero.sync.storage.watcher.fsEventsStoragePath"
+	},
+	{
+		"name": "extensions.zotero.tabs.title.reader"
+	},
+	{
+		"name": "extensions.zotero.tagSelector.displayAllTags"
+	},
+	{
+		"name": "extensions.zotero.tagSelector.showAutomatic"
+	},
+	{
+		"name": "extensions.zotero.tempStackedMode",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.translators.attachSupplementary"
+	},
+	{
+		"name": "extensions.zotero.translators.BibLaTeX.export.simpleCitekey"
+	},
+	{
+		"name": "extensions.zotero.translators.BibTeX.export.dontProtectInitialCase"
+	},
+	{
+		"name": "extensions.zotero.translators.BibTeX.export.simpleCitekey"
+	},
+	{
+		"name": "extensions.zotero.translators.CrossrefREST.email"
+	},
+	{
+		"name": "extensions.zotero.translators.RIS.import.ignoreUnknown"
+	},
+	{
+		"name": "extensions.zotero.translators.RIS.import.keepID"
+	},
+	{
+		"name": "extensions.zotero.translators.supplementaryAsLink"
+	},
+	{
+		"name": "extensions.zotero.trashAutoEmptyDays"
+	},
+	{
+		"name": "extensions.zotero.triggerProxyAuthentication"
+	},
+	{
+		"name": "extensions.zotero.ui.tagsAfterTitle",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.uiDensity",
+		"type": "string"
+	},
+	{
+		"name": "extensions.zotero.undoHistory.steps"
+	},
+	{
+		"name": "extensions.zotero.useDataDir",
+		"type": "boolean"
+	},
+	{
+		"name": "extensions.zotero.vacuum.freelistThreshold"
+	},
+	{
+		"name": "extensions.zotero.vacuum.interval"
+	},
+	{
+		"name": "extensions.zotero.vacuum.lastTime"
+	},
+	{
+		"name": "extensions.zotero.viewOnDoubleClick"
+	},
+	{
+		"name": "extensions.zotero.warnOnUnsafeDataDir",
+		"type": "boolean"
+	},
+	{
+		"name": "general.useragent.locale"
+	},
+	{
+		"name": "intl.locale.matchOS"
+	},
+	{
+		"name": "intl.locale.requested"
+	},
+	{
+		"name": "layout.spellcheckDefault"
+	},
+	{
+		"name": "ui.popup.disable_autohide"
+	}
+]

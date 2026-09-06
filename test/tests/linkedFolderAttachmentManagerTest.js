@@ -3,6 +3,7 @@ describe('Zotero.LinkedFolderAttachmentManager', function () {
 	let sandbox;
 	let originalPrefs;
 	let createdItems;
+	let createdCollections;
 
 	async function makeArticle(title = 'A Cloud-Synchronized Paper') {
 		let item = await createDataObject('item', {
@@ -11,6 +12,17 @@ describe('Zotero.LinkedFolderAttachmentManager', function () {
 		});
 		createdItems.push(item);
 		return item;
+	}
+
+	async function makeCollection(name, parent = null) {
+		let collection = await createDataObject('collection', { name, parentID: parent?.id });
+		createdCollections.push(collection);
+		return collection;
+	}
+
+	async function putInCollections(parent, collections) {
+		parent.setCollections(collections.map(collection => collection.id));
+		await parent.saveTx();
 	}
 
 	async function makePDF(parent, title = 'Full Text PDF') {
@@ -85,6 +97,7 @@ describe('Zotero.LinkedFolderAttachmentManager', function () {
 		tempDir = await getTempDirectory();
 		sandbox = sinon.createSandbox();
 		createdItems = [];
+		createdCollections = [];
 		originalPrefs = {
 			enabled: Zotero.Prefs.get('linkedFolderAttachments.enabled'),
 			provider: Zotero.Prefs.get('linkedFolderAttachments.provider'),
@@ -115,6 +128,9 @@ describe('Zotero.LinkedFolderAttachmentManager', function () {
 					Zotero.logError(e);
 				}
 			}
+		}
+		for (let collection of createdCollections.reverse()) {
+			if (Zotero.Collections.get(collection.id)) await collection.eraseTx();
 		}
 		await Zotero.DB.queryAsync(
 			"DELETE FROM settings WHERE setting='linkedFolderAttachmentManager'"
@@ -737,4 +753,282 @@ describe('Zotero.LinkedFolderAttachmentManager', function () {
 
 		assert.equal(PathUtils.filename(folder), 'Known Citation (2)');
 	});
+	it('preserves numeric collection prefixes and mirrors nested desktop collections', async function () {
+		let parent = await makeArticle();
+		let top = await makeCollection('1. Chemistry');
+		let child = await makeCollection('[2] Catalysis/2026', top);
+		await putInCollections(parent, [top, child]);
+		sandbox.stub(Zotero.QuickCopy, 'getContentFromItems').returns({ text: '[1] Stable Citation.' });
+		let folder = await Zotero.LinkedFolderAttachmentManager.getOrCreateArticleFolder(parent.id);
+		assert.equal(folder, PathUtils.join(tempDir, '1. Chemistry', '[2] Catalysis-2026', 'Stable Citation'));
+		assert.equal(await Zotero.LinkedFolderAttachmentManager.getOrCreateArticleFolder(parent.id), folder);
+	});
+
+	it('uses one deterministic deepest collection for articles with multiple memberships', async function () {
+		let parent = await makeArticle();
+		let top = await makeCollection('Chemistry');
+		let first = await makeCollection('First', top);
+		let second = await makeCollection('Second', top);
+		await putInCollections(parent, [second, top, first]);
+		let expected = first.key < second.key ? first : second;
+		let folder = await Zotero.LinkedFolderAttachmentManager.getOrCreateArticleFolder(parent.id);
+		assert.equal(PathUtils.filename(PathUtils.parent(folder)), expected.name);
+	});
+
+	it('isolates collections whose names collide after case, Unicode, or filename sanitization', async function () {
+		let a = await makeArticle('First');
+		let b = await makeArticle('Second');
+		let first = await makeCollection('Café/A');
+		let second = await makeCollection('CAFE\u0301:A');
+		await putInCollections(a, [first]);
+		await putInCollections(b, [second]);
+		let [aFolder, bFolder] = await Promise.all([
+			Zotero.LinkedFolderAttachmentManager.getOrCreateArticleFolder(a.id),
+			Zotero.LinkedFolderAttachmentManager.getOrCreateArticleFolder(b.id),
+		]);
+		assert.equal(PathUtils.filename(PathUtils.parent(aFolder)), 'Café-A');
+		assert.equal(PathUtils.filename(PathUtils.parent(bFolder)), 'CAFÉ-A (2)');
+	});
+
+	it('shares collection folders while isolating identical article citations during concurrent creation', async function () {
+		let collection = await makeCollection('Research');
+		let a = await makeArticle();
+		let b = await makeArticle();
+		await putInCollections(a, [collection]);
+		await putInCollections(b, [collection]);
+		sandbox.stub(Zotero.QuickCopy, 'getContentFromItems').returns({ text: 'Same Citation' });
+		let folders = await Promise.all([a, b].map(parent =>
+			Zotero.LinkedFolderAttachmentManager.getOrCreateArticleFolder(parent.id)));
+		assert.equal(PathUtils.parent(folders[0]), PathUtils.parent(folders[1]));
+		assert.notEqual(folders[0], folders[1]);
+	});
+
+	it('upgrades existing linked PDFs and SI with stable item and annotation identities', async function () {
+		this.timeout(20000);
+		let parent = await makeArticle();
+		let primary = await makePDF(parent);
+		let supplement = await makeRealFileAttachment(parent, 'data.csv', 'text/csv', 'x,y\n1,2');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(primary.id);
+		let linkedSI = await manager.convertStoredFileToLinkedFile(supplement.id);
+		createdItems.push(linked, linkedSI);
+		await assertLinkedConversion(linked);
+		await assertLinkedConversion(linkedSI);
+		let annotation = await createAnnotation('highlight', linked, { comment: 'Preserved through folder moves' });
+		createdItems.push(annotation);
+		let originalPath = await linked.getFilePathAsync();
+		let citation = PathUtils.filename(PathUtils.parent(originalPath));
+		let collection = await makeCollection('2. Project');
+		await putInCollections(parent, [collection]);
+		await manager.reconcileCollectionHierarchy();
+		let expectedFolder = PathUtils.join(tempDir, collection.name, citation);
+		assert.equal(PathUtils.parent(await linked.getFilePathAsync()), expectedFolder);
+		assert.equal(PathUtils.parent(await linkedSI.getFilePathAsync()), expectedFolder);
+		assert.equal(annotation.parentItemID, linked.id);
+		assert.isFalse(await IOUtils.exists(originalPath));
+		assert.isTrue(await linked.fileExists());
+		let status = await manager.getMigrationStatus();
+		assert.equal(status.hierarchyJobs[0].phase, 'complete');
+		assert.equal(status.jobs.find(job => job.newAttachmentKey == linked.key).targetRelativePath, linked.attachmentPath);
+		let record = JSON.parse(await Zotero.DB.valueQueryAsync(
+			"SELECT value FROM settings WHERE setting='linkedFolderAttachmentManager' AND key=?",
+			[`managed/${linked.libraryID}/${linked.key}`]));
+		assert.equal(record.relativePath, linked.attachmentPath);
+	});
+
+	it('follows collection renames and moves while keeping the citation folder stable', async function () {
+		let parent = await makeArticle();
+		let first = await makeCollection('Original');
+		await putInCollections(parent, [first]);
+		let source = await makeRealFileAttachment(parent, 'results.csv', 'text/csv', 'unchanged');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let citation = PathUtils.filename(PathUtils.parent(await linked.getFilePathAsync()));
+		let top = await makeCollection('New Parent');
+		let notifiedReconciliation = sandbox.spy(manager, 'reconcileCollectionHierarchy');
+		first.name = 'Renamed';
+		first.parentID = top.id;
+		await first.saveTx();
+		assert.isTrue(notifiedReconciliation.called, 'Collection modification did not enqueue hierarchy reconciliation');
+		await Promise.all(notifiedReconciliation.returnValues);
+		assert.equal(PathUtils.parent(await linked.getFilePathAsync()), PathUtils.join(tempDir, top.name, first.name, citation));
+		let stable = linked.attachmentPath;
+		await manager.reconcileCollectionHierarchy();
+		assert.equal(linked.attachmentPath, stable);
+		notifiedReconciliation.resetHistory();
+		await putInCollections(parent, []);
+		assert.isTrue(notifiedReconciliation.called, 'Collection membership removal did not enqueue hierarchy reconciliation');
+		await Promise.all(notifiedReconciliation.returnValues);
+		assert.equal(PathUtils.parent(await linked.getFilePathAsync()), PathUtils.join(tempDir, citation));
+	});
+
+	it('recovers a copied collection relocation after a failure before the path transaction', async function () {
+		let parent = await makeArticle();
+		let source = await makeRealFileAttachment(parent, 'recovery.csv', 'text/csv', 'durable original');
+		let collection = await makeCollection('Recovery');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let originalPath = await linked.getFilePathAsync();
+		let originalQuery = Zotero.DB.queryAsync.bind(Zotero.DB);
+		let failure = sandbox.stub(Zotero.DB, 'queryAsync').callsFake(async (sql, params, ...rest) => {
+			if (params?.[1]?.startsWith?.('relocation/') && params[2]
+					&& JSON.parse(params[2]).phase == 'committed') {
+				throw new Error('Simulated pre-commit interruption');
+			}
+			return originalQuery(sql, params, ...rest);
+		});
+		await putInCollections(parent, [collection]);
+		await manager.reconcileCollectionHierarchy();
+		assert.equal(await Zotero.DB.valueQueryAsync(
+			'SELECT path FROM itemAttachments WHERE itemID=?', [linked.id]), linked.attachmentPath);
+		assert.equal(await linked.getFilePathAsync(), originalPath);
+		assert.isTrue(await IOUtils.exists(originalPath));
+		assert.equal((await manager.getMigrationStatus()).hierarchyJobs[0].phase, 'planned');
+		failure.restore();
+		await manager.reconcileCollectionHierarchy();
+		assert.notEqual(await linked.getFilePathAsync(), originalPath);
+		assert.equal(await IOUtils.readUTF8(await linked.getFilePathAsync()), 'durable original');
+		assert.isFalse(await IOUtils.exists(originalPath));
+	});
+
+	it('recovers source cleanup after a committed collection path transaction', async function () {
+		let parent = await makeArticle();
+		let source = await makeRealFileAttachment(parent, 'cleanup.csv', 'text/csv', 'durable original');
+		let collection = await makeCollection('Cleanup');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let originalPath = await linked.getFilePathAsync();
+		let originalQuery = Zotero.DB.columnQueryAsync.bind(Zotero.DB);
+		let failure = sandbox.stub(Zotero.DB, 'columnQueryAsync').callsFake(async (sql, params, ...rest) => {
+			if (sql.includes('WHERE path IN') && params?.[0] == originalPath) {
+				throw new Error('Simulated cleanup interruption');
+			}
+			return originalQuery(sql, params, ...rest);
+		});
+		await putInCollections(parent, [collection]);
+		await manager.reconcileCollectionHierarchy();
+		assert.notEqual(await linked.getFilePathAsync(), originalPath);
+		assert.isTrue(await IOUtils.exists(originalPath));
+		assert.equal((await manager.getMigrationStatus()).hierarchyJobs[0].phase, 'committed');
+		failure.restore();
+		await manager.reconcileCollectionHierarchy();
+		assert.isFalse(await IOUtils.exists(originalPath));
+		assert.equal((await manager.getMigrationStatus()).hierarchyJobs[0].phase, 'complete');
+	});
+
+	it('waits for an open reader before changing collection paths', async function () {
+		let parent = await makeArticle();
+		let source = await makeRealFileAttachment(parent, 'reader.csv', 'text/csv', 'preserved');
+		let collection = await makeCollection('Reader');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let originalPath = await linked.getFilePathAsync();
+		let reader = { itemID: linked.id, _isTabClosed: false };
+		Zotero.Reader._readers.push(reader);
+		try {
+			await putInCollections(parent, [collection]);
+			await manager.reconcileCollectionHierarchy();
+			assert.equal(await linked.getFilePathAsync(), originalPath);
+			assert.include((await manager.getMigrationStatus()).hierarchyJobs[0].lastError, 'reader');
+			await Zotero.AnnotationStorageCoordinator.withAttachmentLock(linked.id, () =>
+				manager.withManagedFileWrite(linked.id, async context => {
+					await IOUtils.writeUTF8(context.path, 'verified edit while relocation waits');
+					return { verifiedIdentity: {
+						size: (await IOUtils.stat(context.path)).size,
+						sha256: await manager.sha256File(context.path),
+					} };
+				}));
+		}
+		finally {
+			Zotero.Reader._readers.splice(Zotero.Reader._readers.indexOf(reader), 1);
+		}
+		let queued = sandbox.spy(manager, 'queueAttachment');
+		await Zotero.Notifier.trigger('close', 'file', [linked.id], {}, true);
+		assert.isTrue(queued.calledWith(linked.id, 'notifier-file-close'), 'Reader close did not enqueue recovery');
+		await Promise.all(queued.returnValues);
+		assert.notEqual(await linked.getFilePathAsync(), originalPath);
+		assert.equal(await IOUtils.readUTF8(await linked.getFilePathAsync()), 'verified edit while relocation waits');
+	});
+
+	it('retains both files when a copied collection destination is externally replaced', async function () {
+		let parent = await makeArticle();
+		let source = await makeRealFileAttachment(parent, 'conflict.csv', 'text/csv', 'preserved source');
+		let collection = await makeCollection('Conflict');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let originalPath = await linked.getFilePathAsync();
+		let originalTransaction = Zotero.DB.executeTransaction.bind(Zotero.DB);
+		let changedPath;
+		sandbox.stub(Zotero.DB, 'executeTransaction').callsFake(async (operation, ...rest) => {
+			let status = await manager.getMigrationStatus();
+			let entry = status.hierarchyJobs[0]?.entries[0];
+			if (entry?.copyPhase == 'copied' && !changedPath) {
+				changedPath = entry.targetPath;
+				await IOUtils.writeUTF8(changedPath, 'external replacement');
+			}
+			return originalTransaction(operation, ...rest);
+		});
+		await putInCollections(parent, [collection]);
+		await manager.reconcileCollectionHierarchy();
+		assert.equal(await linked.getFilePathAsync(), originalPath);
+		assert.equal(await IOUtils.readUTF8(originalPath), 'preserved source');
+		assert.equal(await IOUtils.readUTF8(changedPath), 'external replacement');
+		assert.equal((await manager.getMigrationStatus()).hierarchyJobs[0].phase, 'planned');
+	});
+
+	it('converges a case-only collection rename to its desktop name after the old folder is empty', async function () {
+		let parent = await makeArticle();
+		let collection = await makeCollection('Chemistry');
+		await putInCollections(parent, [collection]);
+		let source = await makeRealFileAttachment(parent, 'case.csv', 'text/csv', 'preserved');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let citation = PathUtils.filename(PathUtils.parent(await linked.getFilePathAsync()));
+		collection.name = 'chemistry';
+		await collection.saveTx();
+		await manager.reconcileCollectionHierarchy();
+		await manager.reconcileCollectionHierarchy();
+		assert.equal(PathUtils.parent(await linked.getFilePathAsync()), PathUtils.join(tempDir, 'chemistry', citation));
+		let stable = linked.attachmentPath;
+		await manager.reconcileCollectionHierarchy();
+		assert.equal(linked.attachmentPath, stable);
+	});
+
+	it('retains a stable collection suffix while the original name belongs to an unmanaged folder', async function () {
+		await IOUtils.makeDirectory(PathUtils.join(tempDir, 'Research'));
+		let parent = await makeArticle();
+		let collection = await makeCollection('Research');
+		await putInCollections(parent, [collection]);
+		let source = await makeRealFileAttachment(parent, 'collision.csv', 'text/csv', 'preserved');
+		await enableForExplicitCalls();
+		let manager = Zotero.LinkedFolderAttachmentManager;
+		let linked = await manager.convertStoredFileToLinkedFile(source.id);
+		createdItems.push(linked);
+		await assertLinkedConversion(linked);
+		let original = linked.attachmentPath;
+		await manager.reconcileCollectionHierarchy();
+		await manager.reconcileCollectionHierarchy();
+		assert.equal(linked.attachmentPath, original);
+		assert.equal(PathUtils.filename(PathUtils.parent(PathUtils.parent(await linked.getFilePathAsync()))), 'Research (2)');
+	});
+
 });

@@ -36,6 +36,8 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	const PREF_PROVIDER = 'linkedFolderAttachments.provider';
 	const JOB_PREFIX = 'job/';
 	const FOLDER_PREFIX = 'folder/';
+	const COLLECTION_PREFIX = 'collection/';
+	const RELOCATION_PREFIX = 'relocation/';
 	const MANAGED_PREFIX = 'managed/';
 	const ORPHAN_PREFIX = 'orphan/';
 	const OWNER_FILENAME = '.zotero-linked-folder-owner.json';
@@ -67,6 +69,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	let _observerID;
 	let _prefObserverIDs = [];
 	let _queues = new Map();
+	let _folderQueue = Promise.resolve();
 	let _startupTimer;
 	let _managerOwnedErasures = new Set();
 
@@ -796,7 +799,95 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		return path.slice(root.length + 1);
 	}
 
+	function _withFolderLock(operation) {
+		let next = _folderQueue.catch(e => Zotero.logError(e)).then(operation);
+		_folderQueue = next;
+		return next;
+	}
+
+	function _sanitizeCollectionName(value) {
+		return _sanitizeName(value, {
+			fallback: 'Untitled Collection', maxCodePoints: MAX_FOLDER_CODE_POINTS,
+		});
+	}
+
+	// A linked attachment has one canonical path. Prefer the deepest membership;
+	// immutable collection keys break ties consistently across installations.
+	function _collectionChain(parent) {
+		let chains = parent.getCollections().map(id => {
+			let chain = [];
+			let seen = new Set();
+			while (id) {
+				if (seen.has(id)) throw new Error('The collection hierarchy contains a cycle');
+				seen.add(id);
+				let collection = Zotero.Collections.get(id);
+				if (!collection || collection.deleted || collection.libraryID != parent.libraryID) return [];
+				chain.unshift(collection);
+				id = collection.parentID;
+			}
+			return chain;
+		}).filter(chain => chain.length);
+		chains.sort((a, b) => b.length - a.length
+			|| (a[a.length - 1].key < b[b.length - 1].key ? -1 : 1));
+		return chains[0] || [];
+	}
+
+	async function _unusedFolder(parentFolder, base) {
+		// Compare portably even on case-sensitive volumes so syncing to another
+		// provider/OS cannot merge two Zotero identities.
+		let occupied = new Set((await IOUtils.getChildren(parentFolder)).map(
+			path => _leafName(path).normalize('NFC').toLowerCase()
+		));
+		for (let index = 1; ; index++) {
+			let name = _folderCandidate(base, index);
+			if (!occupied.has(name.normalize('NFC').toLowerCase())) return PathUtils.join(parentFolder, name);
+		}
+	}
+
+	async function _collectionFolder(parent, root, rootIdentity) {
+		let folder = root;
+		for (let collection of _collectionChain(parent)) {
+			let key = _settingKey(COLLECTION_PREFIX, parent.libraryID, collection.key);
+			let name = _sanitizeCollectionName(collection.name);
+			let stored = await _readSetting(key);
+			let parentRelative = folder == root ? '' : _relativeToRoot(root, folder);
+			let reusable = stored && stored.name == name && stored.parentRelative == parentRelative
+				&& stored.rootPath == root && _sameRoot(stored.rootIdentity, rootIdentity);
+			// A case-only rename temporarily needs a suffix while the old folder
+			// still holds article files. Converge to the desktop name once that
+			// occupied path has been safely emptied, without disturbing collisions.
+			if (reusable && _leafName(stored.relativePath) != name
+					&& _leafName(await _unusedFolder(folder, name)) == name) reusable = false;
+			if (reusable) {
+				if (PathUtils.isAbsolute(stored.relativePath)
+						|| stored.relativePath.split(/[\\/]/u).includes('..')) {
+					throw new Error('The collection folder mapping is unsafe');
+				}
+				folder = PathUtils.joinRelative(root, stored.relativePath);
+			}
+			else {
+				folder = await _unusedFolder(folder, name);
+			}
+			if (_containsSymlink(root, folder)) throw new Error('The collection folder contains a symlink');
+			if (reusable) await Zotero.File.createDirectoryIfMissingAsync(folder, { createAncestors: true });
+			else await IOUtils.makeDirectory(folder, { ignoreExisting: false });
+			await _writeSetting(key, {
+				v: 1, name, parentRelative, relativePath: _relativeToRoot(root, folder),
+				rootPath: root, rootIdentity,
+			});
+		}
+		return folder;
+	}
+
 	async function _chooseArticleFolder(parent) {
+		return _withFolderLock(() => _chooseArticleFolderUnlocked(parent));
+	}
+
+	async function _chooseArticleFolderUnlocked(parent) {
+		let relocation = await _readSetting(_settingKey(RELOCATION_PREFIX, parent.libraryID, parent.key));
+		if (relocation && relocation.phase != 'complete') {
+			throw new Error('Finish pending collection organization before adding article files');
+		}
 		let mappingKey = _settingKey(FOLDER_PREFIX, parent.libraryID, parent.key);
 		let root = _getRoot();
 		let rootIdentity = await _rootIdentity(root);
@@ -832,19 +923,258 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 			return reused;
 		}
 
+		let collectionFolder = await _collectionFolder(parent, root, rootIdentity);
 		let base = await _citationFolderName(parent);
-		let name = _folderCandidate(base, 1);
-		for (let index = 2; await IOUtils.exists(PathUtils.join(root, name)); index++) {
-			name = _folderCandidate(base, index);
-		}
-		let folder = PathUtils.join(root, name);
-		await Zotero.File.createDirectoryIfMissingAsync(folder, { createAncestors: true });
+		let folder = await _unusedFolder(collectionFolder, base);
+		await IOUtils.makeDirectory(folder, { ignoreExisting: false });
 		if (_containsSymlink(root, folder)) throw new Error('The article folder contains a symlink');
 		await _writeSetting(mappingKey, {
-			v: 2, relativePath: name, rootPath: root, rootIdentity,
+			v: 3, relativePath: _relativeToRoot(root, folder), rootPath: root, rootIdentity,
 		});
 		return folder;
 	}
+
+	async function _assertRelocationRoot(journal) {
+		if (!_canContinue()) throw new Error('Collection organization is paused');
+		let { root, validation } = await _validateConfiguredRoot();
+		let claim = await _getClaimStatus();
+		if (!validation?.valid || !claim.isOrganizer || root != journal.rootPath
+				|| claim.generation != journal.ownerGeneration) {
+			throw new Error('Collection organization requires the original root and organizer');
+		}
+	}
+
+	async function _verifyRelocationEntry(entry, journal, committed = false) {
+		let item = await Zotero.Items.getByLibraryAndKeyAsync(journal.libraryID, entry.attachmentKey);
+		let record = await _readSetting(_settingKey(MANAGED_PREFIX, journal.libraryID, entry.attachmentKey));
+		let expectedPath = committed ? entry.targetRelativePath : entry.record.relativePath;
+		// A reader may legitimately update a managed PDF while relocation waits.
+		// Refresh an uncopied snapshot only from the verified managed revision.
+		if (!committed && !entry.copyPhase && record?.relativePath == expectedPath
+				&& !await IOUtils.exists(entry.targetPath) && !await IOUtils.exists(entry.tempPath)
+				&& await _managedPath(record) == entry.sourcePath
+				&& !_containsSymlink(journal.rootPath, entry.sourcePath)
+				&& _sameIdentity(await _fileIdentity(entry.sourcePath), record)) {
+			entry.record = { ...record };
+		}
+		if (!item?.isLinkedFileAttachment() || item.deleted || item.parentKey != journal.parentKey
+				|| item.attachmentPath != expectedPath || record?.relativePath != expectedPath
+				|| record.parentKey != journal.parentKey
+				|| (!committed && ((record.revision || 0) != (entry.record.revision || 0)
+					|| !_sameIdentity(record, entry.record)))) {
+			throw new Error('A managed attachment changed during collection organization');
+		}
+		if (_isOpenInReader(item.id)) throw new Error('Close the article reader to finish collection organization');
+		let path = committed ? entry.targetPath : entry.sourcePath;
+		if (await _managedPath(record) != path || _containsSymlink(journal.rootPath, path)
+				|| !_sameIdentity(await _fileIdentity(path), committed ? record : entry.record)) {
+			throw new Error('Managed file identity changed during collection organization');
+		}
+		return { item, record };
+	}
+
+	async function _resumeRelocation(journal, journalKey) {
+		await _assertRelocationRoot(journal);
+		let items = await Promise.all(journal.entries.map(entry =>
+			Zotero.Items.getByLibraryAndKeyAsync(journal.libraryID, entry.attachmentKey)));
+		if (items.some(item => !item)) throw new Error('A collection organization attachment is missing');
+		let coordinator = Zotero.AnnotationStorageCoordinator;
+		if (!coordinator?.withAttachmentLock) throw new Error('Annotation locking is unavailable');
+		return coordinator.withAttachmentLock(items.map(item => item.id), async () => {
+			if (items.some(item => _isOpenInReader(item.id))) {
+				throw new Error('Close the article reader to finish collection organization');
+			}
+			if (journal.phase != 'committed') {
+				for (let entry of journal.entries) {
+					await _verifyRelocationEntry(entry, journal);
+					if (_containsSymlink(journal.rootPath, entry.targetPath)
+							|| _containsSymlink(journal.rootPath, entry.tempPath)) {
+						throw new Error('Collection destination contains a symlink');
+					}
+					if (await IOUtils.exists(entry.targetPath)
+							&& (entry.copyPhase != 'copied-temp' && entry.copyPhase != 'copied'
+								|| await IOUtils.exists(entry.tempPath))) {
+						throw new Error('An unrelated file occupies the collection destination');
+					}
+					if (!await IOUtils.exists(entry.targetPath)) {
+						if (!await IOUtils.exists(entry.tempPath)) {
+							await IOUtils.copy(entry.sourcePath, entry.tempPath, { noOverwrite: true });
+						}
+						if (!_sameIdentity(await _fileIdentity(entry.tempPath), entry.record)) {
+							throw new Error('Collection copy failed verification; original file retained');
+						}
+						entry.copyPhase = 'copied-temp';
+						await _writeSetting(journalKey, journal);
+						await IOUtils.move(entry.tempPath, entry.targetPath, { noOverwrite: true });
+					}
+					if (!_sameIdentity(await _fileIdentity(entry.targetPath), entry.record)) {
+						throw new Error('Collection destination changed; original file retained');
+					}
+					entry.copyPhase = 'copied';
+					await _writeSetting(journalKey, journal);
+				}
+				await _assertRelocationRoot(journal);
+				try {
+					await Zotero.DB.executeTransaction(async () => {
+						for (let entry of journal.entries) {
+							let { item, record } = await _verifyRelocationEntry(entry, journal);
+							if (_containsSymlink(journal.rootPath, entry.targetPath)
+									|| !_sameIdentity(await _fileIdentity(entry.targetPath), entry.record)) {
+								throw new Error('Collection destination changed before path update');
+							}
+							let references = await Zotero.DB.columnQueryAsync(
+								'SELECT itemID FROM itemAttachments WHERE path IN (?, ?) AND itemID != ?',
+								[entry.targetPath, entry.targetRelativePath, item.id]
+							);
+							if (references.length) throw new Error('Another attachment refers to the collection destination');
+							item.attachmentPath = entry.targetRelativePath;
+							await item.save({ notifierData: { linkedFolderAttachmentManager: true } });
+							await _writeSetting(_settingKey(MANAGED_PREFIX, journal.libraryID, item.key), {
+								...record, relativePath: entry.targetRelativePath, revision: (record.revision || 0) + 1,
+							});
+						}
+						for (let row of await _getRows(JOB_PREFIX)) {
+							let job = JSON.parse(row.value);
+							let entry = journal.entries.find(entry => entry.attachmentKey == job.newAttachmentKey);
+							if (job.libraryID != journal.libraryID || !entry) continue;
+							if (job.phase != 'complete' || job.targetRelativePath != entry.record.relativePath) {
+								throw new Error('Attachment transfer evidence changed during collection organization');
+							}
+							await _saveJob({ ...job, targetFolder: journal.targetFolder,
+								targetPath: entry.targetPath, targetRelativePath: entry.targetRelativePath });
+						}
+						await _writeSetting(_settingKey(FOLDER_PREFIX, journal.libraryID, journal.parentKey), {
+							v: 3, relativePath: _relativeToRoot(journal.rootPath, journal.targetFolder),
+							rootPath: journal.rootPath, rootIdentity: await _rootIdentity(journal.rootPath),
+						});
+						await _assertRelocationRoot(journal);
+						await _writeSetting(journalKey, { ...journal, phase: 'committed', lastError: null });
+					});
+				}
+				catch (e) {
+					// Item.save() refreshes its cache inside the transaction. A later
+					// rollback does not restore that cache, so reload durable primary
+					// data before readers or the next recovery attempt can use a path.
+					// This also handles an exception after a successful DB commit.
+					for (let item of items) await item.loadPrimaryData(true);
+					throw e;
+				}
+				// Read durable phase rather than assuming callbacks cannot throw after commit.
+				journal = await _readSetting(journalKey);
+			}
+			for (let entry of journal.entries) {
+				await _assertRelocationRoot(journal);
+				await _verifyRelocationEntry(entry, journal, true);
+				if (!await IOUtils.exists(entry.sourcePath)) continue;
+				if (_containsSymlink(journal.rootPath, entry.sourcePath)
+						|| !_sameIdentity(await _fileIdentity(entry.sourcePath), entry.record)) {
+					throw new Error('Old collection file changed; retained for review');
+				}
+				let references = await Zotero.DB.columnQueryAsync(
+					'SELECT itemID FROM itemAttachments WHERE path IN (?, ?)',
+					[entry.sourcePath, entry.record.relativePath]
+				);
+				if (references.length) throw new Error('Another attachment still references the old collection file');
+				await _assertRelocationRoot(journal);
+				// Path and managed identity are durable before deleting redundant bytes.
+				if (_containsSymlink(journal.rootPath, entry.sourcePath)
+						|| !_sameIdentity(await _fileIdentity(entry.sourcePath), entry.record)) {
+					throw new Error('Old collection file changed immediately before cleanup');
+				}
+				await IOUtils.remove(entry.sourcePath);
+			}
+			await _writeSetting(journalKey, { ...journal, phase: 'complete', lastError: null });
+			// Remove only known old article/collection ancestors, and only when empty.
+			let oldFolder = journal.sourceFolder;
+			while (oldFolder != journal.rootPath && !_containsSymlink(journal.rootPath, oldFolder)) {
+				if (await IOUtils.exists(oldFolder)) {
+					if ((await IOUtils.getChildren(oldFolder)).length) break;
+					await IOUtils.remove(oldFolder);
+				}
+				oldFolder = PathUtils.parent(oldFolder);
+			}
+			return true;
+		});
+	}
+
+	async function _reorganizeArticle(parent) {
+		if (!parent || parent.deleted || parent.libraryID != Zotero.Libraries.userLibraryID
+				|| !_canContinue()) return false;
+		let journalKey = _settingKey(RELOCATION_PREFIX, parent.libraryID, parent.key);
+		try {
+			let pending = await _readSetting(journalKey);
+			if (pending && pending.phase != 'complete') await _resumeRelocation(pending, journalKey);
+			let claim = await _getClaimStatus();
+			if (!claim.isOrganizer) return false;
+			// Incomplete conversions own their planned paths until recovery finishes.
+			for (let row of await _getRows(JOB_PREFIX)) {
+				let job = JSON.parse(row.value);
+				if (job.libraryID == parent.libraryID && job.parentKey == parent.key && job.phase != 'complete') return false;
+			}
+			let sourceFolder = await _folderForLinkedChild(parent);
+			if (!sourceFolder) return false;
+			return await _withFolderLock(async () => {
+				let root = _getRoot();
+				let rootIdentity = await _rootIdentity(root);
+				let collectionFolder = await _collectionFolder(parent, root, rootIdentity);
+				if (PathUtils.parent(sourceFolder) == collectionFolder) return true;
+				let targetFolder = await _unusedFolder(collectionFolder, _leafName(sourceFolder));
+				await IOUtils.makeDirectory(targetFolder, { ignoreExisting: false });
+				let journal = { v: 1, libraryID: parent.libraryID, parentKey: parent.key,
+					rootPath: root, ownerGeneration: claim.generation, sourceFolder, targetFolder,
+					phase: 'planned', entries: [], lastError: null };
+				for (let item of Zotero.Items.get(parent.getAttachments(false))) {
+					let record = await _readSetting(_settingKey(MANAGED_PREFIX, parent.libraryID, item.key));
+					if (!record) continue;
+					let sourcePath = await _managedPath(record);
+					if (!sourcePath || PathUtils.parent(sourcePath) != sourceFolder) {
+						throw new Error('Managed article folders conflict during collection organization');
+					}
+					let targetPath = PathUtils.join(targetFolder, _leafName(sourcePath));
+					journal.entries.push({ attachmentKey: item.key, record, sourcePath, targetPath,
+						targetRelativePath: Zotero.Attachments.BASE_PATH_PLACEHOLDER + _relativeToRoot(root, targetPath),
+						tempPath: PathUtils.join(targetFolder, '.zotero-collection-' + Zotero.Utilities.randomString(12) + '.tmp') });
+				}
+				await _writeSetting(journalKey, journal);
+				return _resumeRelocation(journal, journalKey);
+			});
+		}
+		catch (e) {
+			// Preserve the actual durable phase on all failures, including exceptions
+			// raised by DB commit callbacks after the transaction succeeded.
+			let journal = await _readSetting(journalKey);
+			if (journal && journal.phase != 'complete') {
+				await _writeSetting(journalKey, { ...journal, lastError: e.message || String(e) });
+			}
+			Zotero.logError(e);
+			return false;
+		}
+	}
+
+	function _queueArticleHierarchy(parent) {
+		let queueKey = `${parent.libraryID}/${parent.key}`;
+		let previous = _queues.get(queueKey) || Promise.resolve();
+		let next = previous.catch(e => Zotero.logError(e)).then(() => _reorganizeArticle(parent));
+		_queues.set(queueKey, next);
+		return next.finally(() => {
+			if (_queues.get(queueKey) == next) _queues.delete(queueKey);
+		});
+	}
+
+	this.reconcileCollectionHierarchy = async function (libraryID = Zotero.Libraries.userLibraryID) {
+		if (libraryID != Zotero.Libraries.userLibraryID || !_canContinue()) return [];
+		let parents = new Set();
+		for (let row of await _getRows(MANAGED_PREFIX)) {
+			let record = JSON.parse(row.value);
+			if (record.libraryID == libraryID && record.parentKey) parents.add(record.parentKey);
+		}
+		let queued = [];
+		for (let key of parents) {
+			let parent = await Zotero.Items.getByLibraryAndKeyAsync(libraryID, key);
+			if (parent) queued.push(_queueArticleHierarchy(parent));
+		}
+		return Promise.allSettled(queued);
+	};
 
 	async function _chooseTarget(folder, filename) {
 		let parsed = _leafName(filename);
@@ -2065,7 +2395,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	this.init = async function () {
 		if (_initialized) return;
 		_initialized = true;
-		_observerID = Zotero.Notifier.registerObserver(this, ['item', 'file'], SETTING);
+		_observerID = Zotero.Notifier.registerObserver(this, ['item', 'file', 'collection', 'collection-item'], SETTING);
 		for (let pref of [PREF_ENABLED, PREF_PROVIDER, 'baseAttachmentPath']) {
 			_prefObserverIDs.push(Zotero.Prefs.registerObserver(pref, async () => {
 				if (Zotero.Prefs.get(PREF_ENABLED)) {
@@ -2080,7 +2410,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		if (Zotero.Prefs.get(PREF_ENABLED)) {
 			Zotero.Prefs.set('saveRelativeAttachmentPath', true);
 			_startupTimer = setTimeout(() => {
-				this.queueLibraryMigration(Zotero.Libraries.userLibraryID).catch(Zotero.logError);
+				this.queueLibraryMigration(Zotero.Libraries.userLibraryID).catch(e => Zotero.logError(e));
 			}, 1000);
 		}
 	};
@@ -2095,19 +2425,25 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	};
 
 	this.notify = async function (event, type, ids, extraData) {
+		if (['collection', 'collection-item'].includes(type) && ['add', 'modify', 'remove', 'delete'].includes(event)) {
+			this.reconcileCollectionHierarchy().catch(e => Zotero.logError(e));
+			return;
+		}
 		if (type == 'item' && ['add', 'modify'].includes(event)) {
 			if (!Zotero.Prefs.get(PREF_ENABLED)) return;
 			for (let id of ids) {
 				if (extraData?.[id]?.linkedFolderAttachmentManager) continue;
-				_observeManagedRevision(id).catch(Zotero.logError);
-				this.queueAttachment(id, `notifier-${event}`).catch(Zotero.logError);
+				let item = Zotero.Items.get(id);
+				if (item?.isRegularItem()) _queueArticleHierarchy(item).catch(e => Zotero.logError(e));
+				_observeManagedRevision(id).catch(e => Zotero.logError(e));
+				this.queueAttachment(id, `notifier-${event}`).catch(e => Zotero.logError(e));
 			}
 		}
-		else if (type == 'file' && ['download', 'modify'].includes(event)) {
+		else if (type == 'file' && ['download', 'modify', 'close'].includes(event)) {
 			if (!Zotero.Prefs.get(PREF_ENABLED)) return;
 			for (let id of ids) {
-				_observeManagedRevision(id).catch(Zotero.logError);
-				this.queueAttachment(id, `notifier-file-${event}`).catch(Zotero.logError);
+				_observeManagedRevision(id).catch(e => Zotero.logError(e));
+				this.queueAttachment(id, `notifier-file-${event}`).catch(e => Zotero.logError(e));
 			}
 		}
 		else if (type == 'item' && event == 'delete') {
@@ -2149,7 +2485,10 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 			? `${item.libraryID}/${item.parentKey}`
 			: `item/${itemID}`;
 		let previous = _queues.get(queueKey) || Promise.resolve();
-		let next = previous.catch(Zotero.logError).then(() => _processJob(itemID, reason));
+		let next = previous.catch(e => Zotero.logError(e)).then(async () => {
+			if (item?.parentItem) await _reorganizeArticle(item.parentItem);
+			return _processJob(itemID, reason);
+		});
 		_queues.set(queueKey, next);
 		try {
 			return await next;
@@ -2163,6 +2502,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		if (libraryID != Zotero.Libraries.userLibraryID || _paused || !Zotero.Prefs.get(PREF_ENABLED)) {
 			return [];
 		}
+		await this.reconcileCollectionHierarchy(libraryID);
 		let ids = await Zotero.DB.columnQueryAsync(
 			'SELECT IA.itemID FROM itemAttachments IA '
 				+ 'JOIN items I ON I.itemID=IA.itemID '
@@ -2244,6 +2584,8 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				Zotero.logError(e);
 			}
 		}
+		let hierarchyJobs = (await _getRows(RELOCATION_PREFIX)).map(row => JSON.parse(row.value))
+			.filter(job => job.libraryID == libraryID);
 		let counts = {};
 		for (let job of jobs) counts[job.phase] = (counts[job.phase] || 0) + 1;
 		let waitingJobs = jobs.filter(job => job.waitReason || job.status == 'waiting'
@@ -2254,6 +2596,8 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 			libraryID,
 			paused: _paused,
 			active: _queues.size,
+			hierarchyJobs,
+			hierarchyFailed: hierarchyJobs.filter(job => job.phase != 'complete' && job.lastError).length,
 			total: jobs.length,
 			complete: counts.complete || 0,
 			failed: failedJobs.length,
@@ -2390,7 +2734,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				? `${source.libraryID}/${source.parentKey}`
 				: `item/${source?.id || job.sourceKey}`;
 			let previous = _queues.get(queueKey) || Promise.resolve();
-			let next = previous.catch(Zotero.logError).then(async () => {
+			let next = previous.catch(e => Zotero.logError(e)).then(async () => {
 				// Reload after earlier notifier work has drained. Resetting a stale
 				// object here could otherwise overwrite a freshly persisted phase.
 				let current = await _readSetting(_settingKey(JOB_PREFIX, job.libraryID, job.sourceKey));
@@ -2417,7 +2761,9 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				if (_queues.get(queueKey) == next) _queues.delete(queueKey);
 			}));
 		}
-		return Promise.allSettled(retried);
+		let results = await Promise.allSettled(retried);
+		await this.reconcileCollectionHierarchy(libraryID);
+		return results;
 	};
 
 	/**
@@ -2643,6 +2989,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 
 	// Small public helpers keep naming and verification independently testable.
 	this.sanitizeArticleFolderName = _sanitizeFolderName;
+	this.sanitizeCollectionFolderName = _sanitizeCollectionName;
 	this.sanitizeFilename = _sanitizeFilename;
 	this.sha256File = _sha256File;
 	this.isEligibleAttachment = _eligibleItem;

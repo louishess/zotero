@@ -2072,6 +2072,108 @@
 	"preferences-advanced-linked-folder-orphan-retained-error": {
 		"string": "The file was retained. Verify that this computer is the organizer, the folder is available, and the file has not changed since it was recorded."
 	},
+	"config-editor-title": {
+		"string": "Config Editor"
+	},
+	"config-editor-intro": {
+		"string": "Browse application settings, including optional settings that have not been set. Changes are saved immediately. Some settings take effect after restarting Zotero."
+	},
+	"config-editor-search.placeholder": {
+		"string": "Search settings by name or value"
+	},
+	"config-editor-search.aria-label": {
+		"string": "Search settings"
+	},
+	"config-editor-scope.aria-label": {
+		"string": "Filter settings"
+	},
+	"config-editor-all": {
+		"string": "All settings"
+	},
+	"config-editor-zotero": {
+		"string": "Zotero settings"
+	},
+	"config-editor-modified": {
+		"string": "Changed settings"
+	},
+	"config-editor-optional": {
+		"string": "Not set"
+	},
+	"config-editor-settings.aria-label": {
+		"string": "Settings"
+	},
+	"config-editor-count": {
+		"string": "Showing { shown } of { total } settings"
+	},
+	"config-editor-more": {
+		"string": "Show more settings"
+	},
+	"config-editor-add": {
+		"string": "Add a custom setting"
+	},
+	"config-editor-new-name.placeholder": {
+		"string": "Full setting name"
+	},
+	"config-editor-new-name.aria-label": {
+		"string": "Full setting name"
+	},
+	"config-editor-new-value.placeholder": {
+		"string": "Value (true or false for Yes / No)"
+	},
+	"config-editor-new-value.aria-label": {
+		"string": "Setting value"
+	},
+	"config-editor-type.aria-label": {
+		"string": "Value type"
+	},
+	"config-editor-boolean": {
+		"string": "Yes / No"
+	},
+	"config-editor-string": {
+		"string": "Text"
+	},
+	"config-editor-number": {
+		"string": "Integer"
+	},
+	"config-editor-save": {
+		"string": "Save"
+	},
+	"config-editor-reset": {
+		"string": "Reset"
+	},
+	"config-editor-yes": {
+		"string": "Yes"
+	},
+	"config-editor-no": {
+		"string": "No"
+	},
+	"config-editor-state-default": {
+		"string": "Default"
+	},
+	"config-editor-state-changed": {
+		"string": "Changed"
+	},
+	"config-editor-state-unset": {
+		"string": "Not set"
+	},
+	"config-editor-state-locked": {
+		"string": "Locked"
+	},
+	"config-editor-invalid-integer": {
+		"string": "Enter a whole number between −2147483648 and 2147483647."
+	},
+	"config-editor-invalid-boolean": {
+		"string": "Enter true or false."
+	},
+	"config-editor-invalid-name": {
+		"string": "Enter a full setting name without spaces."
+	},
+	"config-editor-existing": {
+		"string": "This setting already exists. Search for its name to edit it."
+	},
+	"config-editor-unavailable": {
+		"string": "Some optional settings could not be loaded. Registered settings are still available."
+	},
 	"scaffold-translator-output.aria-label": {
 		"string": "Console"
 	},

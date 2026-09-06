@@ -449,7 +449,7 @@
 		<hbox id="zotero-prefpane-advanced-open-buttons" align="center">
 			<button id="config-editor"
 				label="&zotero.preferences.configEditor;"
-				oncommand="Zotero.openInViewer('about:config')"/>
+				oncommand="window.openDialog('chrome://zotero/content/preferences/configEditor.xhtml', 'zotero-config-editor', 'chrome,centerscreen,resizable')"/>
 			<button id="memory-info"
 				label="Memory Info"
 				oncommand="Zotero.openInViewer('about:memory')"

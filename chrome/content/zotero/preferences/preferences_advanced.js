@@ -1018,7 +1018,7 @@ Zotero_Preferences.Linked_Folder = {
 				?? counts.waiting ?? counts.pending ?? counts.queued ?? 0;
 			let active = status.active
 				?? counts.active ?? counts.moving ?? counts.inProgress ?? 0;
-			let failed = status.failed ?? counts.failed ?? 0;
+			let failed = (status.failed ?? counts.failed ?? 0) + (status.hierarchyFailed || 0);
 			let deferred = status.deferred ?? counts.deferred ?? 0;
 			this._setMessage(summary, 'preferences-advanced-linked-folder-progress-summary', {
 				completed, total, pending, active, failed, deferred
@@ -1028,7 +1028,7 @@ Zotero_Preferences.Linked_Folder = {
 			pause.disabled = !hasWork || !!status.paused || typeof manager.pause != 'function';
 			resume.disabled = !status.paused || typeof manager.resume != 'function';
 			retry.disabled = failed == 0 || typeof manager.retryFailed != 'function';
-			this.renderJobDetails(status.jobs || []);
+			this.renderJobDetails([...(status.jobs || []), ...(status.hierarchyJobs || [])]);
 		}
 		catch (e) {
 			Zotero.debug(e, 2);
@@ -1113,7 +1113,7 @@ Zotero_Preferences.Linked_Folder = {
 		for (let job of attention) {
 			let row = document.createElementNS('http://www.w3.org/1999/xhtml', 'li');
 			this._setMessage(row, 'preferences-advanced-linked-folder-job-detail', {
-				name: job.targetFilename || job.sourceKey,
+				name: job.targetFilename || job.sourceKey || job.parentKey,
 				state: job.waitReason || job.phase,
 				message: job.lastError || '',
 			});
