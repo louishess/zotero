@@ -20,7 +20,7 @@
   "validatedIntegration": "c3d91b11a0e685af7f225b4591ac77ed936ab326",
   "connectorFeatureSource": "4c0baf1a7a975b31867eb9a1280aaf5a3fdd9925",
   "masterGuide": "AGENTS.md",
-  "completionStatus": "requested-feature-update-and-capped-journal-batch-reviewed; packaging-in-progress",
+  "completionStatus": "requested-feature-update-and-user-capped-journal-batch-complete; wider-journal-coverage-deferred",
   "zoteroMergeBaseline": {
     "desktop": "637a88cca9c415504b094e41c48c0eb51a8dfbaa",
     "connector": "659335473613664bfef3d08e64fe52d7c80e1005"
@@ -49,8 +49,11 @@
     "connector": "113 passing; 9 opt-in live diagnostics pending",
     "workerPDF": "188/188; typecheck passed",
     "permanentDeletionUI": "3/3",
-    "collectionHierarchyConfigEditor": "100/100 focused Gecko integration tests; 2026-09-06"
+    "collectionHierarchyConfigEditor": "100/100 focused Gecko integration tests; 2026-09-06",
+    "journalFixtures": "13 named-journal fixture suites; six ScienceDirect legacy regression tests",
+    "journalConnectorHarness": "8 passing on rebuilt Connector; includes the six ScienceDirect tests",
+    "journalTransfers": "Two live current-layout controls: Springer mainPDF+DOCX and Frontiers mainPDF+SIPDF; four saved files hash/format verified"
   },
-  "packagedDesktopFeatureCommit": "927ca77a36bdf5024eca7731917b2f8efb35b599",
-  "reviewArtifactDirectory": "../combined-review/ZoteroMerge-20260905"
+  "packagedDesktopFeatureCommit": "1e4dabc911be344948462f991d001daddfc49f0f",
+  "reviewArtifactDirectory": "../combined-review/ZoteroMerge-20260906"
 }
