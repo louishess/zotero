@@ -26,10 +26,41 @@ const PUBLISHER_TRANSLATOR_IDS = [
 	'f26cfb71-efd7-47ae-a28c-d4d8852096bd', // Cell Press
 	'ca0e7488-ef20-4485-8499-9c47e60dcfa7', // RSC Publishing
 	'5af42734-7cd5-4c69-97fc-bc406999bdba', // Atypon Journals (Science.org)
-	'fe728bc9-595a-4f03-98fc-766f1d8d0936' // Wiley Online Library
+	'fe728bc9-595a-4f03-98fc-766f1d8d0936', // Wiley Online Library
+	'acf93a17-a83b-482b-a45e-0c64cfd49bee', // MDPI Journals
+	'd6c6210a-297c-4b2c-8c43-48cb503cc49e', // Springer Link
+	'cb9e794e-7a65-47cd-90f6-58cdd191e8b0' // Frontiers
 ];
 
 const CASES = [
+	{
+		publisher: 'Molecules rollout', label: 'MDPI Journals',
+		url: 'https://www.mdpi.com/1420-3049/31/17/3117',
+		expectedDOI: '10.3390/molecules31173117', expectedSupplementCount: 1,
+		primaryPattern: /\/1420-3049\/31\/17\/3117\/pdf(?:[?#]|$)/,
+		supplementPattern: /\/1420-3049\/31\/17\/3117\/s\d+(?:[?#]|$)/,
+	},
+	{
+		publisher: 'Catalysts rollout', label: 'MDPI Journals',
+		url: 'https://www.mdpi.com/2073-4344/16/9/804',
+		expectedDOI: '10.3390/catal16090804', expectedSupplementCount: 1,
+		primaryPattern: /\/2073-4344\/16\/9\/804\/pdf(?:[?#]|$)/,
+		supplementPattern: /\/2073-4344\/16\/9\/804\/s\d+(?:[?#]|$)/,
+	},
+	{
+		publisher: 'Materials Science rollout', label: 'Springer Link',
+		url: 'https://link.springer.com/article/10.1007/s10853-025-11859-6',
+		expectedDOI: '10.1007/s10853-025-11859-6', expectedSupplementCount: 1,
+		primaryPattern: /\/content\/pdf\//,
+		supplementPattern: /media\.springernature\.com\/original\/.*\/MediaObjects\//i,
+	},
+	{
+		publisher: 'Frontiers Chemistry rollout', label: 'Frontiers',
+		url: 'https://www.frontiersin.org/journals/chemistry/articles/10.3389/fchem.2021.685783/full',
+		expectedDOI: '10.3389/fchem.2021.685783', expectedSupplementCount: 1,
+		primaryPattern: /\/articles\/10\.3389\/fchem\.2021\.685783\/pdf(?:[?#]|$)/,
+		supplementPattern: /\/articles\/685783\/file\//,
+	},
 	{
 		publisher: 'ACS',
 		label: ['ACS Publications', 'Silverchair'],
@@ -258,6 +289,17 @@ async function translate(tab, translatorLabel) {
 }
 
 function assertPublisherFix(testCase, result) {
+	if (testCase.supplementPattern) {
+		assert.lengthOf(result.items, 1);
+		assertDOIEqual(result.items[0].DOI, testCase.expectedDOI);
+		assert.isTrue(result.items[0].attachments.some(attachment =>
+			attachment.mimeType === 'application/pdf' && testCase.primaryPattern.test(attachment.url)),
+		'primary PDF descriptor is separate from SI');
+		let supplements = result.items[0].attachments.filter(attachment => testCase.supplementPattern.test(attachment.url));
+		assert.lengthOf(supplements, testCase.expectedSupplementCount);
+		if (supplementaryAsLink) assert.isTrue(supplements.every(attachment => attachment.snapshot === false));
+		return;
+	}
 	if (testCase.publisher === 'ACS') {
 		assert.equal(result.translators[0]?.label, 'ACS Publications');
 		assert.lengthOf(result.items, 1);
@@ -373,7 +415,11 @@ function assertLibraryTransfer(testCase, result) {
 				&& primaryDescriptorURLs.has(normalizeAttachmentURL(attachment.url)));
 		assert.lengthOf(primaryPDFs, 1, 'primary article PDF was transferred');
 	}
-	if (testCase.publisher === 'ACS') {
+	if (testCase.supplementPattern) {
+		assert.lengthOf(savedAttachments.filter(attachment => testCase.supplementPattern.test(attachment.url)),
+			testCase.expectedSupplementCount);
+	}
+	else if (testCase.publisher === 'ACS') {
 		assert.lengthOf(savedAttachments.filter(attachment =>
 			attachment.url.includes('/article-supplement/')
 				|| attachment.url.includes('ndownloader.figshare.com/files/')),
@@ -421,6 +467,7 @@ function normalizeAttachmentURL(url) {
 function isPrimaryPDFURL(testCase, url) {
 	url = normalizeAttachmentURL(url);
 	if (!url) return false;
+	if (testCase.primaryPattern) return testCase.primaryPattern.test(url);
 	if (testCase.publisher === 'ACS') {
 		return /^https?:\/\/pubs\.acs\.org\/doi\/pdf\/[^?#]+(?:\?[^#]*)?$/i.test(url);
 	}
@@ -476,6 +523,14 @@ describe('Live publisher transfer URL classification', function () {
 				supplement: 'https://onlinelibrary.wiley.com/action/downloadSupplement?file=example.pdf',
 			},
 		];
+		for (let rollout of CASES.filter(testCase => testCase.supplementPattern)) {
+			let primary = rollout.publisher.startsWith('Molecules') ? rollout.url + '/pdf'
+				: rollout.publisher.startsWith('Catalysts') ? rollout.url + '/pdf'
+					: rollout.publisher.startsWith('Materials') ? 'https://link.springer.com/content/pdf/10.1007/s10853-025-11859-6.pdf'
+						: 'https://www.frontiersin.org/articles/10.3389/fchem.2021.685783/pdf';
+			assert.isTrue(isPrimaryPDFURL(rollout, primary), rollout.publisher);
+			assert.isFalse(isPrimaryPDFURL(rollout, 'https://example.invalid/supplement.pdf'), rollout.publisher);
+		}
 		for (let testCase of cases) {
 			assert.isTrue(isPrimaryPDFURL(testCase, testCase.primary), testCase.publisher);
 			assert.isFalse(isPrimaryPDFURL(testCase, testCase.supplement), testCase.publisher);
@@ -503,6 +558,10 @@ runLive('Live publisher translator diagnostics', function () {
 	let restoreConnectorCallMethod;
 
 	before(async function () {
+		if (libraryTransfer) {
+			assert.equal(process.env.LIVE_CONNECTOR_URL, 'http://127.0.0.1:23129/', 'live transfers require the explicit disposable endpoint');
+			await background(async endpoint => Zotero.Prefs.set('connector.url', endpoint), process.env.LIVE_CONNECTOR_URL);
+		}
 		await seedTranslatorPrefs(
 			worker,
 			PUBLISHER_TRANSLATOR_IDS,
