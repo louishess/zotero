@@ -440,35 +440,49 @@ describe("Reader", function () {
 			let reader = await Zotero.Reader.open(attachment.id);
 			await reader._initPromise;
 			reader._internalReader._annotationManager._skipAnnotationSavingDebounce = true;
+			let sandbox = sinon.createSandbox();
+			try {
+				let displayError = sandbox.spy(reader, 'displayError');
+				let path = await attachment.getFilePathAsync();
+				let bytes = await IOUtils.read(path);
+				let externalMarker = new TextEncoder().encode('\n% external change\n');
+				let changed = new Uint8Array(bytes.length + externalMarker.length);
+				changed.set(bytes);
+				changed.set(externalMarker, bytes.length);
+				await IOUtils.write(path, changed);
+				let rejected = reader._internalReader._annotationManager.addAnnotation(
+					Components.utils.cloneInto({
+						type: 'highlight',
+						color: '#ffd400',
+						sortIndex: '00000|000003|00000',
+						position: { pageIndex: 0, rects: [[50, 660, 150, 672]] }
+					}, reader._iframeWindow)
+				);
+				let rejectedID = rejected.id;
+				await waitForCallback(
+					() => !reader._internalReader._annotationManager._savingInProgress,
+					200,
+					10
+				);
+				sinon.assert.calledOnce(displayError);
+				assert.equal(displayError.firstCall.args[0].name, 'FileChangedException');
+				assert.isTrue(reader._internalReader._state.readOnly);
 
-			let path = await attachment.getFilePathAsync();
-			let bytes = await IOUtils.read(path);
-			let externalMarker = new TextEncoder().encode('\n% external change\n');
-			let changed = new Uint8Array(bytes.length + externalMarker.length);
-			changed.set(bytes);
-			changed.set(externalMarker, bytes.length);
-			await IOUtils.write(path, changed);
-			let rejected = reader._internalReader._annotationManager.addAnnotation(
-				Components.utils.cloneInto({
-					type: 'highlight',
-					color: '#ffd400',
-					sortIndex: '00000|000003|00000',
-					position: { pageIndex: 0, rects: [[50, 660, 150, 672]] }
-				}, reader._iframeWindow)
-			);
-			await waitForCallback(
-				() => !reader._internalReader._annotationManager._savingInProgress,
-				200,
-				10
-			);
-			let error = await getPromiseError(reader._fileAnnotationMutationPromise);
-			assert.equal(error.name, 'FileChangedException');
-			assert.isTrue(reader._internalReader._state.readOnly);
-
-			await reader.reload();
-			assert.notOk(reader._internalReader._state.readOnly);
-			assert.isFalse(reader._fileAnnotations.has(rejected.id));
-			reader.close();
+				// Reload must not discard the rejected draft or adopt the external
+				// file's token and silently overwrite it on a retry.
+				let error = await getPromiseError(reader.reload());
+				assert.equal(error.name, 'FileChangedException');
+				assert.isTrue(reader._internalReader._state.readOnly);
+				assert.isTrue(reader._internalReader._annotationManager._annotations
+					.some(annotation => annotation.id === rejectedID));
+				assert.isTrue(reader._failedFileAnnotationDrafts.has(rejectedID));
+				assert.isFalse(reader._fileAnnotations.has(rejectedID));
+				assert.deepEqual(await IOUtils.read(path), changed);
+			}
+			finally {
+				sandbox.restore();
+				await cleanupReaders(reader);
+			}
 		});
 
 		it('should synchronize file-backed changes between two open readers', async function () {

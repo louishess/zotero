@@ -25,9 +25,15 @@ describe('Reader annotation notifications', function () {
 			_isTabClosed: closed,
 			_fileAnnotations: new Map(),
 			_fileAnnotationSources: new Map(),
+			_fileAnnotationMutationPromise: null,
+			_fileAnnotationSaveFailed: false,
+			_failedFileAnnotationDrafts: new Map(),
+			_failedFileAnnotationDeletions: new Set(),
 			annotationItemIDs: [],
 			updateTitle: sandbox.stub().resolves(),
 			displayError: sandbox.stub(),
+			setAnnotations: sandbox.stub(),
+			unsetAnnotations: sandbox.stub(),
 			_applyFileAnnotationResult: sandbox.stub().callsFake(value => value),
 			_resolveAnnotationStorageConflicts: sandbox.stub().callsFake(value => value),
 			receiveFileAnnotationChanges: sandbox.stub()
@@ -107,6 +113,54 @@ describe('Reader annotation notifications', function () {
 		sinon.assert.notCalled(Zotero.AnnotationStorageCoordinator.reconcile);
 	});
 
+	it('keeps coordinator item notifications out of file-backed reader content', async function () {
+		let annotation = await Zotero.Annotations.saveFromJSON(attachments[0], {
+			key: Zotero.DataObjectUtilities.generateKey(),
+			type: 'note',
+			comment: 'coordinator-owned annotation',
+			color: '#ffd400',
+			position: { pageIndex: 0, rects: [[50, 700, 72, 722]] },
+			sortIndex: '00000|000000|00000',
+			tags: []
+		});
+		await Zotero.Reader.waitForAnnotationRecovery();
+		let reader = Zotero.Reader._readers[0];
+		reader.annotationItemIDs = [];
+		reader.setAnnotations.resetHistory();
+		reader.unsetAnnotations.resetHistory();
+
+		Zotero.Reader.notify('modify', 'item', [annotation.id], {
+			annotationStorageCoordinator: true
+		});
+
+		assert.deepEqual(reader.annotationItemIDs, [annotation.id]);
+		sinon.assert.notCalled(reader.setAnnotations);
+		sinon.assert.notCalled(reader.unsetAnnotations);
+	});
+
+	it('preserves stock item notification updates for standard readers', async function () {
+		let annotation = await Zotero.Annotations.saveFromJSON(attachments[0], {
+			key: Zotero.DataObjectUtilities.generateKey(),
+			type: 'note',
+			comment: 'stock annotation',
+			color: '#ffd400',
+			position: { pageIndex: 0, rects: [[50, 700, 72, 722]] },
+			sortIndex: '00000|000000|00000',
+			tags: []
+		});
+		await Zotero.Reader.waitForAnnotationRecovery();
+		let reader = Zotero.Reader._readers[0];
+		reader._fileAnnotationMode = false;
+		reader.setAnnotations.resetHistory();
+
+		Zotero.Reader.notify('modify', 'item', [annotation.id], {
+			annotationStorageCoordinator: true
+		});
+
+		assert.deepEqual(reader.annotationItemIDs, [annotation.id]);
+		sinon.assert.calledOnce(reader.setAnnotations);
+	});
+
 	it('does not replace unsaved iframe annotations from a background snapshot', async function () {
 		let reader = Zotero.Reader._readers[0];
 		reader._internalReader = {
@@ -118,6 +172,78 @@ describe('Reader annotation notifications', function () {
 		Zotero.Reader.notify('modify', 'file', [attachments[0].id], {});
 		await Zotero.Reader.waitForAnnotationRecovery();
 		sinon.assert.notCalled(Zotero.AnnotationStorageCoordinator.reconcile);
+	});
+
+	it('defers while a reader save is active, then reconciles once it drains', async function () {
+		let reader = Zotero.Reader._readers[0];
+		reader._internalReader = {
+			_annotationManager: {
+				_unsavedAnnotations: new Map(),
+				_savingInProgress: true
+			}
+		};
+		Zotero.Reader.notify('modify', 'file', [attachments[0].id], {});
+		await Zotero.Reader.waitForAnnotationRecovery();
+		sinon.assert.notCalled(Zotero.AnnotationStorageCoordinator.reconcile);
+		assert.isTrue(Zotero.Reader._deferredAnnotationRecoveries.has(attachments[0].id));
+
+		reader._internalReader._annotationManager._savingInProgress = false;
+		Zotero.Reader._scheduleDeferredAnnotationRecovery(attachments[0].id);
+		await Zotero.Reader.waitForAnnotationRecovery(attachments[0].id);
+		sinon.assert.calledOnce(Zotero.AnnotationStorageCoordinator.reconcile);
+	});
+
+	it('preserves a file recovery reason when a data-sync event coalesces', async function () {
+		let reader = Zotero.Reader._readers[0];
+		reader._internalReader = {
+			_annotationManager: {
+				_unsavedAnnotations: new Map([['pending', {}]]),
+				_savingInProgress: false
+			}
+		};
+		Zotero.PDFWorker.getEffectiveAnnotationStorageMode.resolves('pdf-only');
+		Zotero.Reader._deferAnnotationRecovery(reader.itemID, 'peer-file-change');
+
+		await Zotero.Reader._queueAnnotationRecovery(reader.itemID, 'data-sync');
+		assert.equal(
+			Zotero.Reader._deferredAnnotationRecoveries.get(reader.itemID).reason,
+			'peer-file-change'
+		);
+
+		reader._internalReader._annotationManager._unsavedAnnotations.clear();
+		Zotero.Reader._scheduleDeferredAnnotationRecovery(reader.itemID);
+		await Zotero.Reader.waitForAnnotationRecovery(reader.itemID);
+		sinon.assert.calledOnce(Zotero.AnnotationStorageCoordinator.reconcile);
+	});
+
+	it('does not inspect a closed reader proxy or retain an unreachable failed draft', function () {
+		let reader = makeReader(attachments[0].id, true);
+		reader._fileAnnotationSaveFailed = true;
+		reader._failedFileAnnotationDrafts.set('closed-draft', { id: 'closed-draft' });
+		Object.defineProperty(reader, '_internalReader', {
+			get() {
+				throw new Error('closed reader proxy was accessed');
+			}
+		});
+
+		assert.isFalse(Zotero.Reader._readerHasPendingFileAnnotationWork(reader));
+	});
+
+	it('does not show iframe errors on a closed reader after recovery fails', async function () {
+		let reader = makeReader(attachments[0].id, true);
+		Object.defineProperty(reader, '_internalReader', {
+			get() {
+				throw new Error('closed reader proxy was accessed');
+			}
+		});
+		Zotero.Reader._readers = [reader];
+		Zotero.PDFWorker.getEffectiveAnnotationStorageMode.rejects(new Error('recovery failed'));
+
+		let recovery = await Zotero.Reader._queueAnnotationRecovery(reader.itemID, 'file-notification');
+
+		assert.equal(recovery.error.message, 'recovery failed');
+		assert.isTrue(reader._fileAnnotationReadOnly);
+		sinon.assert.notCalled(reader.displayError);
 	});
 
 	it('rechecks iframe edits that arrive while background reconcile is waiting', async function () {
@@ -260,6 +386,106 @@ describe('Reader attachment open reservation', function () {
 
 		reader.close();
 		await Zotero.Promise.delay(100);
+	});
+
+	it('defers explicit reload until debounced file edits drain', async function () {
+		Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
+		sandbox.stub(Zotero.PDFWorker, 'canUseFileAnnotations').resolves(true);
+		let reader = await Zotero.Reader.open(
+			attachment.id,
+			null,
+			{ openInBackground: true }
+		);
+		let refresh = sandbox.stub(reader, '_refreshFileAnnotations').resolves({
+			conflictResolutionCancelled: false
+		});
+		let getData = sandbox.spy(reader, '_getData');
+		let iframeReload = sandbox.stub(reader._internalReader, 'reload');
+		let manager = reader._internalReader._annotationManager;
+		manager._unsavedAnnotations.set('pending-comment', {});
+
+		await reader.reload();
+		assert.isTrue(Zotero.Reader._deferredAnnotationRecoveries
+			.get(attachment.id).reloadReaders.has(reader));
+		sinon.assert.notCalled(refresh);
+		sinon.assert.notCalled(getData);
+		sinon.assert.notCalled(iframeReload);
+
+		manager._unsavedAnnotations.clear();
+		Zotero.Reader._scheduleDeferredAnnotationRecovery(attachment.id);
+		await Zotero.Reader.waitForAnnotationRecovery(attachment.id);
+
+		sinon.assert.calledOnce(refresh);
+		sinon.assert.calledOnce(getData);
+		sinon.assert.calledOnce(iframeReload);
+	});
+
+	it('uses peer IDs for snapshot deletions and propagates cancelled conflict state', async function () {
+		Zotero.Prefs.set('reader.annotations.storageMode', 'pdf-only');
+		sandbox.stub(Zotero.PDFWorker, 'canUseFileAnnotations').resolves(true);
+		let source = await Zotero.Reader.open(attachment.id, null, { openInBackground: true });
+		let peer = await Zotero.Reader.open(attachment.id, null, {
+			openInBackground: true,
+			allowDuplicate: true
+		});
+		let staleAnnotation = {
+			id: 'STALE123',
+			isExternal: false,
+			readOnly: false,
+			text: 'old comment'
+		};
+		peer._internalReader._annotationManager._annotations = [staleAnnotation];
+		peer._fileAnnotations.set(staleAnnotation.id, staleAnnotation);
+		let unset = sandbox.stub(peer._internalReader, 'unsetAnnotations');
+		sandbox.stub(source, '_promptAnnotationStorageConflicts').returns(null);
+		let cancelled = await source._resolveAnnotationStorageConflicts({ conflicts: [{}] });
+		assert.isTrue(cancelled.conflictResolutionCancelled);
+		assert.isTrue(source._fileAnnotationReadOnly);
+		assert.isTrue(peer._fileAnnotationReadOnly);
+
+		source._applyFileAnnotationResult({
+			effectiveMode: 'pdf-only',
+			annotations: [],
+			fileToken: { size: 1, lastModified: 2 },
+			fileRevision: 2,
+			sources: {},
+			conflictResolutionCancelled: true
+		});
+
+		sinon.assert.calledOnce(unset);
+		assert.include(unset.firstCall.args[0], staleAnnotation.id);
+		assert.isFalse(peer._fileAnnotations.has(staleAnnotation.id));
+		assert.isTrue(source._fileAnnotationReadOnly);
+		assert.isTrue(peer._fileAnnotationReadOnly);
+		assert.isTrue(source._internalReader._state.readOnly);
+		assert.isTrue(peer._internalReader._state.readOnly);
+
+		source._applyFileAnnotationResult({
+			effectiveMode: 'pdf-only',
+			annotations: [],
+			fileToken: { size: 1, lastModified: 3 },
+			fileRevision: 3,
+			sources: {}
+		});
+		assert.isFalse(source._fileAnnotationReadOnly);
+		assert.isFalse(peer._fileAnnotationReadOnly);
+		assert.isNotOk(source._internalReader._state.readOnly);
+		assert.isNotOk(peer._internalReader._state.readOnly);
+
+		sandbox.stub(source, '_isReadOnly').returns(true);
+		source._fileAnnotationReadOnly = true;
+		peer._fileAnnotationReadOnly = true;
+		source._applyFileAnnotationResult({
+			effectiveMode: 'pdf-only',
+			annotations: [],
+			fileToken: { size: 1, lastModified: 4 },
+			fileRevision: 4,
+			sources: {}
+		});
+		assert.isFalse(source._fileAnnotationReadOnly);
+		assert.isFalse(peer._fileAnnotationReadOnly);
+		assert.isTrue(source._internalReader._state.readOnly, 'builtin read-only state must survive recovery');
+		assert.isNotOk(peer._internalReader._state.readOnly);
 	});
 });
 
