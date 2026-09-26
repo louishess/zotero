@@ -128,6 +128,7 @@ const runLive = process.env.LIVE_PUBLISHER_TESTS === 'true' ? describe : describ
 const supplementaryAsLink = process.env.LIVE_SUPPLEMENTARY_AS_LINK === 'true';
 const expectPublisherFixes = process.env.EXPECT_PUBLISHER_FIXES === 'true';
 const libraryTransfer = process.env.LIVE_LIBRARY_TRANSFER === 'true';
+const liveDesktopPrefs = process.env.LIVE_DESKTOP_PREFS === 'true';
 const attachmentFetchOnly = process.env.LIVE_ATTACHMENT_FETCH_ONLY === 'true';
 const requirePrimaryPDF = process.env.LIVE_REQUIRE_PRIMARY_PDF === 'true';
 
@@ -145,7 +146,7 @@ async function stubLiveConnectorMethods(pingResponse) {
 		globalThis.__liveLibraryTransferCalls = [];
 		sinon.stub(Zotero.Connector, 'callMethod').callsFake(async function(options, payload, ...args) {
 			let method = typeof options === 'string' ? options : options.method;
-			if (method === 'ping') return pingResponse;
+			if (method === 'ping' && pingResponse) return pingResponse;
 
 			let call = { method };
 			if (method === 'saveItems') {
@@ -247,6 +248,9 @@ async function inspectPage(tab) {
 			challengePage: document.title === 'Just a moment...',
 			doi,
 			pdf: document.querySelector('meta[name="citation_pdf_url"]')?.content || null,
+			pdfLink: document.querySelector('a.article-pdfLink')?.href || null,
+			acsSupplementLinks: [...document.querySelectorAll('.dataSuppLink a[href]')]
+				.map(link => ({ text: link.textContent.trim(), url: link.href })),
 			acsDoiResolution,
 			acsModernSupplements: [...document.querySelectorAll('a[data-doctype="dataSupplementDoc"][href]')]
 				.map(link => ({ text: link.textContent.trim(), url: link.href })),
@@ -426,8 +430,11 @@ function assertLibraryTransfer(testCase, result) {
 		testCase.expectedSupplementCount);
 	}
 	else if (testCase.publisher === 'Nature') {
+		// This control has three PDF supplements and eighteen XLSX files.
+		// A real Desktop policy may intentionally disable the spreadsheets.
+		let expected = result.downloadPolicy?.enabled?.xlsx === false ? 3 : 21;
 		assert.lengthOf(savedAttachments.filter(attachment =>
-			attachment.url.includes('media.springernature.com/original/')), 21);
+			attachment.url.includes('media.springernature.com/original/')), expected);
 	}
 	else if (testCase.publisher === 'Cell Press') {
 		assert.lengthOf(savedAttachments.filter(attachment =>
@@ -556,11 +563,24 @@ runLive('Live publisher translator diagnostics', function () {
 	this.timeout(120000);
 
 	let restoreConnectorCallMethod;
+	let downloadPolicy;
 
 	before(async function () {
+		assert.isFalse(liveDesktopPrefs && !libraryTransfer,
+			'live Desktop preferences require the disposable transfer endpoint');
 		if (libraryTransfer) {
 			assert.equal(process.env.LIVE_CONNECTOR_URL, 'http://127.0.0.1:23129/', 'live transfers require the explicit disposable endpoint');
 			await background(async endpoint => Zotero.Prefs.set('connector.url', endpoint), process.env.LIVE_CONNECTOR_URL);
+		}
+		let desktopPing = liveDesktopPrefs
+			? await background(() => Zotero.Connector.ping())
+			: null;
+		if (desktopPing) {
+			downloadPolicy = desktopPing.prefs.automaticAttachmentDownloads;
+			assert.equal(desktopPing.prefs.translatorPrefsVersion, 1);
+			assert.isTrue(desktopPing.prefs.translatorPrefs.attachSupplementary);
+			assert.equal(desktopPing.prefs.translatorPrefs.supplementaryAsLink, supplementaryAsLink);
+			console.log(`LIVE_DESKTOP_PREFS ${JSON.stringify(desktopPing.prefs)}`);
 		}
 		await seedTranslatorPrefs(
 			worker,
@@ -579,9 +599,9 @@ runLive('Live publisher translator diagnostics', function () {
 			})
 		), PUBLISHER_TRANSLATOR_IDS);
 		console.log(`LIVE_SEEDED_TRANSLATORS ${JSON.stringify(seededTranslators)}`);
-		await background(async (supplementaryAsLink) => {
-			sinon.stub(Zotero.Connector, 'checkIsOnline').resolves(true);
-			Zotero.Connector._processTranslatorPreferences({
+		await background(async (supplementaryAsLink, liveDesktopPrefs) => {
+			if (!liveDesktopPrefs) sinon.stub(Zotero.Connector, 'checkIsOnline').resolves(true);
+			if (!liveDesktopPrefs) Zotero.Connector._processTranslatorPreferences({
 				translatorPrefsVersion: 1,
 				translatorPrefs: {
 					attachSupplementary: true,
@@ -589,7 +609,7 @@ runLive('Live publisher translator diagnostics', function () {
 				}
 			});
 			await Zotero.OffscreenManager.sendMessage('Prefs.loadNamespace', ['translators.']);
-		}, supplementaryAsLink);
+		}, supplementaryAsLink, liveDesktopPrefs);
 		let [backgroundPref, offscreenPref] = await Promise.all([
 			background(() => Zotero.Prefs.get('translators.attachSupplementary')),
 			offscreen(() => Zotero.Prefs.get('translators.attachSupplementary'))
@@ -599,7 +619,7 @@ runLive('Live publisher translator diagnostics', function () {
 		// Keep translator selection isolated from the user's cached translator
 		// versions while optionally allowing saveItems/saveAttachment through to
 		// the running Zotero client for an explicitly requested library transfer.
-		restoreConnectorCallMethod = await stubLiveConnectorMethods({
+		restoreConnectorCallMethod = await stubLiveConnectorMethods(liveDesktopPrefs ? null : {
 			prefs: {
 				downloadAssociatedFiles: true,
 				translatorPrefsVersion: 1,
@@ -683,6 +703,7 @@ runLive('Live publisher translator diagnostics', function () {
 					: null;
 				let result = {
 					publisher: testCase.publisher,
+					downloadPolicy,
 					translators,
 					seededAfterDetection,
 					page,

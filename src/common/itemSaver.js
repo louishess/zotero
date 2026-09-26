@@ -317,6 +317,7 @@ ItemSaver.prototype = {
 			&& this._shouldDownloadAttachment({ mimeType: 'application/pdf' });
 		for (let item of this._items) {
 			item.hasPrimaryAttachment = false;
+			let pendingPrimaryFailures = [];
 			for (let attachment of item.attachments) {
 				if (attachment.snapshot === false) {
 					attachmentCallback(attachment, 100);
@@ -356,12 +357,24 @@ ItemSaver.prototype = {
 					Zotero.debug(`ItemSaver.saveAttachmentsToZotero: Failed to save attachment ${attachment.url}: ${e}`);
 					if (attachment.isPrimary && shouldAttemptToDownloadOAAttachments) {
 						attachmentCallback(attachment, 0);
+						pendingPrimaryFailures.push({ attachment, error: e });
 					}
 					else {
 						// Otherwise it's a failure
 						attachmentCallback(attachment, false, e);
 						Zotero.logError(e);
 					}
+				}
+			}
+			// Only the first primary candidate can be retried by the OA resolver.
+			// Other failed PDFs (including SI) must not remain at 0% forever when
+			// another attachment succeeded or the resolver is handling a different file.
+			let resolverAttachment = !item.hasPrimaryAttachment && shouldAttemptToDownloadOAAttachments
+				? item.attachments.find(attachment => attachment.isPrimary) : null;
+			for (let { attachment, error } of pendingPrimaryFailures) {
+				if (attachment !== resolverAttachment) {
+					attachmentCallback(attachment, false, error);
+					Zotero.logError(error);
 				}
 			}
 			if (!item.hasPrimaryAttachment) {

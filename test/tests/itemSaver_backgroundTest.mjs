@@ -44,8 +44,10 @@ describe("ItemSaver Background", function() {
 					{ name: 'csrf', value: 'xyz789' }
 				]);
 				
+				let pdfBytes = new Uint8Array(1024);
+				pdfBytes.set(new TextEncoder().encode('%PDF-1.7\n'));
 				sinon.stub(Zotero.HTTP, 'request').resolves({
-					response: new ArrayBuffer(1024),
+					response: pdfBytes.buffer,
 					status: 200,
 					getResponseHeader: (header) => header.toLowerCase() == 'content-length' ? '1024' : null
 				});
@@ -175,8 +177,10 @@ describe("ItemSaver Background", function() {
 							return null;
 						}
 					});
+					let pdfBytes = new Uint8Array(2048);
+					pdfBytes.set(new TextEncoder().encode('%PDF-1.7\n'));
 					Zotero.HTTP.request.onSecondCall().resolves({
-						response: new ArrayBuffer(2048),
+						response: pdfBytes.buffer,
 						status: 200,
 						getResponseHeader: (header) => {
 							if (header.toLowerCase() == 'content-length') return '2048';
@@ -263,8 +267,10 @@ describe("ItemSaver Background", function() {
 					Zotero.Utilities.Connector.getContentTypeFromXHR.restore();
 
 					// mock http response without a content type header
+					let pdfBytes = new Uint8Array(1024);
+					pdfBytes.set(new TextEncoder().encode('%PDF-1.7\n'));
 					Zotero.HTTP.request.resolves({
-						response: new ArrayBuffer(1024),
+						response: pdfBytes.buffer,
 						status: 200,
 						getResponseHeader: (header) => {
 							if (header.toLowerCase() == 'content-length') return '1024';
@@ -283,8 +289,10 @@ describe("ItemSaver Background", function() {
 		describe('When response has no Content-Length header', function() {
 			it('should accept the response if content type is valid', async function() {
 				const result = await background(async function(attachment, mockTab) {
+					let pdfBytes = new Uint8Array(1024);
+					pdfBytes.set(new TextEncoder().encode('%PDF-1.7\n'));
 					Zotero.HTTP.request.resolves({
-						response: new ArrayBuffer(1024),
+						response: pdfBytes.buffer,
 						status: 200,
 						getResponseHeader: () => null
 					});

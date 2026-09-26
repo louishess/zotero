@@ -355,26 +355,31 @@ Zotero.ItemSaver._validateResponse = function(attachment, xhr, contentType) {
 		return "empty response";
 	}
 	contentType = contentType || Zotero.Utilities.Connector.getContentTypeFromXHR(xhr).contentType;
-	// If the attachment doesn't specify the mimeType, we accept whatever mimeType we got here.
-	// If translators want to enforce that a PDF is saved, then they should specify that!
-	if (!attachment.mimeType) {
-		// Set the missing mimeType based on the content type header or the URL
+	let inferredMIMEType = !attachment.mimeType;
+	if (inferredMIMEType) {
 		attachment.mimeType = contentType;
-		if (!xhr.getResponseHeader("Content-Type")) {
+		if (!xhr.getResponseHeader('Content-Type')) {
 			attachment.mimeType = Zotero.Utilities.Connector.guessAttachmentMimeType(attachment.url);
 		}
-		return null;
 	}
-	if (attachment.mimeType.toLowerCase() === contentType.toLowerCase()) {
-		return null;
+	else if (attachment.mimeType.toLowerCase() !== contentType.toLowerCase()
+			&& contentType.toLowerCase() !== 'application/octet-stream') {
+		return 'Attachment MIME type ' + contentType
+			+ ' does not match specified type ' + attachment.mimeType;
+	}
+	// Verification and error pages can be served with PDF or binary headers.
+	// Inspect the fetched bytes before accepting those headers or uploading them.
+	if ((attachment.mimeType?.toLowerCase() === 'application/pdf'
+			|| contentType.toLowerCase() === 'application/pdf')
+			&& xhr.response instanceof ArrayBuffer) {
+		let prefix = new Uint8Array(xhr.response, 0, Math.min(xhr.response.byteLength, 1024));
+		if (!/%PDF-\d\.\d/.test(new TextDecoder().decode(prefix))) {
+			return 'response is not a PDF';
+		}
 	}
 	// Trust the translator's mimeType when the server returns octet-stream,
 	// since some servers serve all binary files as octet-stream (e.g., OSF, Libraries Tasmania)
-	if (contentType.toLowerCase() === 'application/octet-stream') {
-		return null;
-	}
-	return "Attachment MIME type " + contentType
-		+ " does not match specified type " + attachment.mimeType;
+	return null;
 };
 
 Zotero.ItemSaver._unpackSafariAttachmentData = function(data) {

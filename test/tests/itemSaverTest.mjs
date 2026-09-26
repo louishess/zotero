@@ -36,6 +36,127 @@ describe("ItemSaver", function() {
 		await tab.close();
 	});
 
+	describe('PDF response validation', function() {
+		it('rejects verification HTML even when it is labelled as PDF or binary', async function() {
+			let result = await background(async function() {
+				let html = new TextEncoder().encode('<!DOCTYPE html><html><title>Verify access</title></html>').buffer;
+				let cookies = sinon.stub(Zotero.Connector_Browser, 'getAllCookies').resolves([]);
+				let request = sinon.stub(Zotero.HTTP, 'request');
+				let upload = sinon.stub(Zotero.Connector, 'callMethod');
+				let errors = [];
+				try {
+					for (let contentType of ['text/html', 'application/pdf', 'application/octet-stream']) {
+						request.resolves({ status: 200, response: html,
+							getResponseHeader: name => name.toLowerCase() === 'content-type'
+								? contentType : String(html.byteLength) });
+						try {
+							await Zotero.ItemSaver.saveAttachmentToZotero({
+								url: 'https://example.com/verification.pdf', mimeType: 'application/pdf',
+							}, 'validation-test', { automatic: false });
+							errors.push(null);
+						}
+						catch (e) { errors.push(e.message); }
+					}
+					return { errors, uploaded: upload.called };
+				}
+				finally {
+					cookies.restore();
+					request.restore();
+					upload.restore();
+				}
+			});
+			assert.isFalse(result.uploaded, 'invalid PDF bytes must not reach Desktop');
+			assert.lengthOf(result.errors, 3);
+			for (let error of result.errors) assert.match(error, /Attachment download failed/);
+		});
+
+		it('accepts PDF headers with a leading byte prefix and leaves other formats alone', async function() {
+			let result = await background(function() {
+				return [
+					['%PDF-1.7\n', 'application/pdf', 'application/pdf'],
+					['\uFEFF \r\n%PDF-2.0\n', 'application/pdf', 'application/octet-stream'],
+					['%PDF-1.7\n', undefined, 'application/pdf'],
+					['PK\x03\x04', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/octet-stream'],
+				].map(([body, mimeType, contentType]) => Zotero.ItemSaver._validateResponse({ mimeType }, {
+					response: new TextEncoder().encode(body).buffer,
+					getResponseHeader: name => name.toLowerCase() === 'content-type' ? contentType : null,
+				}, contentType));
+			});
+			assert.deepEqual(result, [null, null, null, null]);
+		});
+
+		it('validates inferred PDFs and empty bodies without a Content-Length header', async function() {
+			let errors = await background(function() {
+				return ['', '<html>Access denied</html>'].map(body => Zotero.ItemSaver._validateResponse({
+					url: 'https://example.com/download.pdf',
+				}, {
+					response: new TextEncoder().encode(body).buffer,
+					getResponseHeader: () => null,
+				}, 'application/octet-stream'));
+			});
+			assert.deepEqual(errors, ['response is not a PDF', 'response is not a PDF']);
+		});
+	});
+
+	describe('individual attachment failures', function() {
+		it('finishes failed SI PDFs while keeping successful files and continuing the save', async function() {
+			let result = await tab.run(async function() {
+				let sandbox = sinon.createSandbox();
+				try {
+					sandbox.stub(Zotero.Connector, 'getPref').resolves(true);
+					let saved = [];
+					sandbox.stub(Zotero.ItemSaver, 'saveAttachmentToZotero').callsFake(async attachment => {
+						if (attachment.id === 'failed-si') throw new Error('publisher rejected SI');
+						saved.push(attachment.id);
+					});
+					let results = [];
+					// Cover failure both before and after the successful primary PDF.
+					for (let ids of [['main', 'failed-si', 'good-si'], ['failed-si', 'main', 'good-si']]) {
+						let saver = new Zotero.ItemSaver({ sessionID: 'failure-isolation' });
+						sandbox.stub(saver, '_loadAutomaticAttachmentPolicy').resolves();
+						let resolver = sandbox.stub(saver, 'saveAttachmentFromResolver').resolves();
+						saver._items = [{ id: 'parent', title: 'Preserved metadata',
+							attachments: ids.map(id => ({ id, url: `https://example.com/${id}.pdf`, mimeType: 'application/pdf' })) }];
+						let progress = {};
+						await saver._saveAttachmentsToZotero((attachment, status) => { progress[attachment.id] = status; });
+						results.push({ progress, resolverCalled: resolver.called, title: saver._items[0].title });
+					}
+					return { results, saved };
+				}
+				finally { sandbox.restore(); }
+			});
+			assert.deepEqual(result.saved, ['main', 'good-si', 'main', 'good-si']);
+			for (let run of result.results) {
+				assert.deepEqual(run.progress, { main: 100, 'failed-si': false, 'good-si': 100 });
+				assert.isFalse(run.resolverCalled);
+				assert.equal(run.title, 'Preserved metadata');
+			}
+		});
+
+		it('retains the primary resolver retry and finalizes other failed PDFs', async function() {
+			let result = await tab.run(async function() {
+				let sandbox = sinon.createSandbox();
+				try {
+					sandbox.stub(Zotero.Connector, 'getPref').resolves(true);
+					sandbox.stub(Zotero.ItemSaver, 'saveAttachmentToZotero').rejects(new Error('publisher rejected file'));
+					let saver = new Zotero.ItemSaver({ sessionID: 'resolver-isolation' });
+					sandbox.stub(saver, '_loadAutomaticAttachmentPolicy').resolves();
+					let resolver = sandbox.stub(saver, 'saveAttachmentFromResolver').callsFake(async (item, callback) => {
+						callback(item.attachments[0], 100);
+					});
+					saver._items = [{ id: 'parent', attachments: ['main', 'failed-si'].map(id => ({
+						id, url: `https://example.com/${id}.pdf`, mimeType: 'application/pdf',
+					})) }];
+					let progress = {};
+					await saver._saveAttachmentsToZotero((attachment, status) => { progress[attachment.id] = status; });
+					return { progress, resolverCalls: resolver.callCount };
+				}
+				finally { sandbox.restore(); }
+			});
+			assert.deepEqual(result, { progress: { main: 100, 'failed-si': false }, resolverCalls: 1 });
+		});
+	});
+
 	describe('_executeSingleFile', function() {
 		it('sets data.url to item.url when item has url defined', async function() {
 			const testUrl = 'https://example.com/test-article';
