@@ -10,22 +10,43 @@ An HTTP 403 in an isolated test browser does not prove that a main-PDF URL is br
 
 ## Ready-to-use local builds
 
-The patched Zotero Desktop client is already built on this machine. A rebuild is not required for live publisher testing unless Desktop code or bundled translators change.
+The patched Zotero Desktop client is already built on this machine, but that
+staged application predates the RSC, Science.org, and Wiley translator commits.
+It is sufficient for ACS, Nature, and Cell Press testing. Rebuild it before a
+real-library test of the three newer publisher changes or any later translator
+work.
 
 - Desktop source: `/Users/louishess/Developer/zotero-si-desktop`
 - Built application: `/Users/louishess/Developer/zotero-si-desktop/app/staging/Zotero.app`
 - Desktop branch: `fix/supplementary-preference-bridge`
-- Desktop revision: `5002c8318`
+- Desktop revision: `522858cc8` (preference defaults and Connector preference
+  bridge; its checked-in translator gitlink is still `45d4b951`)
 - Connector source: `/Users/louishess/Desktop/Zotero Modification/Zotero SI Fix`
 - Unpacked Chrome build: `/Users/louishess/Desktop/Zotero Modification/Zotero SI Fix/build/manifestv3`
 - Connector branch: `fix/supplementary-preference-bridge`
-- Connector revision before this handoff update: `c9d4b55`
+- Connector revision: `4c0baf1`
 
-The existing staged Desktop application contains the preference bridge and the
-previous ACS, Nature, and Cell Press fixes. The Desktop source branch now also
-pins the RSC, Science, and Wiley translator changes described below. Rebuild
-Desktop (or use a Connector test that explicitly seeds the forked translators)
-before a real-library test of these three newer publisher changes.
+The Connector checkout pins translator revision `70e15ee7`, which contains all
+six publisher changes. The separate Desktop source checkout does not yet pin
+that revision. Before building Desktop, fetch the translator fork and check out
+`70e15ee7` inside its `translators` submodule. This intentionally leaves the
+Desktop superproject showing a modified gitlink until that pin is committed.
+
+Build a normal, double-clickable macOS application without launching it from a
+terminal:
+
+```sh
+cd /Users/louishess/Developer/zotero-si-desktop
+git -C translators fetch origin fix/supplementary-attachments
+git -C translators checkout 70e15ee76959b45d7404e780ec5f7f7fbc5acde2
+npm run build
+app/scripts/dir_build -p m -f
+```
+
+The result is `/Users/louishess/Developer/zotero-si-desktop/app/staging/Zotero.app`.
+Launch that bundle from Finder. Do not confuse the existing unrelated
+`package-lock.json` modification with a publisher change, and do not discard it
+without checking with the user.
 
 Quit the release Zotero application before launching the patched Desktop client. Chrome should have the store-installed Connector disabled and the unpacked build above enabled.
 
@@ -42,7 +63,9 @@ The running patched client has already been verified to return `translatorPrefsV
 - Publisher translators: <https://github.com/louishess/translators/tree/fix/supplementary-attachments>
   - current tip: `70e15ee7`
 - Zotero Desktop preference handoff: <https://github.com/louishess/zotero/tree/fix/supplementary-preference-bridge>
-  - current tip: `5002c8318`
+  - current tip: `522858cc8`
+  - note: update its translator gitlink to `70e15ee7` before treating the
+    Desktop branch as a complete six-publisher source state
 - Connector-compatible Zotero translator pin: <https://github.com/louishess/zotero/tree/fix/connector-supplementary-translators>
   - current tip: `4c05017a6`
 
@@ -176,18 +199,117 @@ the new SI selector or the working PDF route should be replaced.
 
 Translator commit: `f3a65dab` (`Science: Attach current supplementary files`).
 
-## Workflow for adding another publisher
+## Novel lessons from the second publisher wave
 
-1. Choose one representative article whose main PDF and at least one SI file are accessible in the user's normal Chrome session. Prefer an open-access example first; add subscription or university-access examples afterward.
-2. Save once with `attachSupplementary=false`. Confirm citation metadata and the main article PDF still work. Record the exact main-PDF URL and do not change it without evidence.
-3. Enable `attachSupplementary=true` and verify the Desktop preference appears in Connector background and offscreen contexts. If every publisher lacks SI, debug the universal handoff before touching translator code.
-4. Inspect the live article HTML for stable semantic selectors, direct file URLs, format labels, duplicate page regions, and supplemental APIs.
-5. Update only the publisher translator if it can already describe downloadable files. Add Connector-level network handling only when descriptors are correct but byte transfer consistently fails.
-6. Infer MIME types from an explicit format, filename/download attribute, or API metadata before falling back to URL extensions. Unknown formats should remain links unless binary handling is proven safe.
-7. Deduplicate normalized absolute URLs. Test repeated sidebar/modal markup and exclude figure-detail, preview, or navigation links.
-8. Test three modes: preference off, download mode, and `supplementaryAsLink=true`.
-9. Run descriptor-only tests in isolated Chrome, then perform one bounded personal-library save in the normal browser profile. Verify actual child attachments and file types in Zotero.
-10. Keep each publisher change in its own translator commit. Commit any genuinely universal Connector change separately with unit coverage.
+In increasing order of difficulty:
+
+1. **RSC: a direct-link problem with route-based type information.** The live
+   page already supplied usable SI URLs. The non-obvious part was that the URL
+   did not need to end in a filename extension: `/article-supplement/{id}/mp4/`
+   carried the authoritative type. Prefer an explicit route segment,
+   `download` attribute, or publisher label over guessing from the final URL.
+   Also include audiovisual MIME types; SI is not limited to PDF and Office
+   files.
+2. **Wiley: a structured file-table problem plus test-case triage.** The
+   official Supporting Information table and `/action/downloadSupplement`
+   endpoint were straightforward once a genuinely positive article was found.
+   The user-supplied article had no SI at all. Always prove that the publisher
+   exposes files before treating a zero-attachment result as a regression, and
+   retain both a positive control and a zero-SI control.
+3. **Science.org: a shared-platform and upstream-metadata problem.** Science.org
+   is served by Atypon, so the correct change belongs in `Atypon Journals.js`,
+   not an Elsevier translator and not necessarily a new publisher-named file.
+   Because that translator serves multiple sites, the new extractor must be
+   narrowly guarded to Science.org until other Atypon installations are
+   verified. In isolated Chrome, the existing citation-metadata POST can fail
+   before the SI helper runs even when the live SI links themselves work. Test
+   discovery helpers separately from end-to-end item creation and recheck 403s
+   in the user's normal authenticated browser.
+
+Cross-cutting lesson: keep four outcomes separate in test reports:
+
+- the page genuinely publishes no SI;
+- the translator did not discover SI;
+- the translator emitted correct descriptors but byte transfer failed; and
+- translation stopped earlier during detection or metadata acquisition.
+
+They require different fixes. Do not change the main-PDF path to compensate for
+an SI, metadata, authentication, or isolated-browser failure.
+
+## Difficulty-ordered workflow for adding another publisher
+
+Proceed in this order and stop at the first layer that explains the failure.
+Later layers are more invasive and should not be attempted preemptively.
+
+### Level 0 — verify the universal bridge once
+
+1. Start the patched Desktop application and unpacked Connector.
+2. Confirm `/connector/ping` returns `attachSupplementary: true` and
+   `supplementaryAsLink: false`, and confirm the Connector applies them in both
+   background and offscreen translation contexts.
+3. If every publisher loses SI, repair this shared preference handoff before
+   editing any translator.
+
+### Level 1 — establish controls and preserve the main PDF
+
+1. Identify the translator by its actual platform and translator ID, not just
+   the publisher logo or domain. Check for shared platforms such as Atypon,
+   Silverchair, HighWire, and ScienceDirect.
+2. Choose an open-access positive control that visibly publishes at least one SI
+   file. Keep a second article with no SI as a negative control. Add
+   subscription or university-access cases only after the open case works.
+3. Save the positive control with `attachSupplementary=false`. Record citation
+   metadata, the main-PDF descriptor and URL, redirects, cookies, and final byte
+   result. Treat these as regression invariants.
+
+### Level 2 — prefer direct server-rendered file links
+
+1. Inspect the live DOM for semantic attributes, an official Supporting
+   Information section/table, direct links, `download` filenames, and explicit
+   format labels.
+2. Add a narrowly scoped extractor to the existing translator. Preserve the
+   existing attachment array and append SI only after the preference check.
+3. Deduplicate normalized absolute URLs across main content, sidebars, modals,
+   and repeated mobile markup. Exclude previews, figure-detail pages, and
+   in-article navigation.
+4. Infer MIME type in this order: publisher/API metadata, explicit route
+   segment, `download` filename, then URL extension. Keep unknown types
+   link-only until binary handling is demonstrated.
+
+### Level 3 — follow a dedicated SI page or structured endpoint
+
+1. If the article advertises a supplement tab or landing page, request that
+   documented page and parse its concrete links. Preserve async completion so
+   `item.complete()` cannot run first.
+2. If the page exposes a documented JSON/API response, use its filenames,
+   formats, and URLs rather than constructing opaque paths.
+3. Test authentication and redirect behavior independently from extraction.
+   Never infer that an endpoint is obsolete solely from an isolated-profile
+   403.
+
+### Level 4 — handle CDN delivery or a publisher migration
+
+1. Only add a CDN URL transformation or Connector network exception after the
+   translator reliably emits the right logical attachments and direct transfer
+   fails in the user's normal Chrome profile.
+2. For a platform migration, test detection, result selection, metadata,
+   main-PDF discovery, SI discovery, and byte delivery as separate layers.
+3. Keep legacy selectors and routes as fallbacks unless live evidence shows
+   they are harmful.
+
+### Level 5 — verification and commits
+
+1. Add deterministic saved-DOM/helper coverage for deduplication, MIME mapping,
+   false-positive filtering, unknown formats, and both preference modes.
+2. Run three modes: preference off, download mode, and
+   `supplementaryAsLink=true`. The citation and main PDF must be unchanged in
+   all three.
+3. Run a descriptor-only isolated-Chrome test. Then obtain authorization for
+   one bounded personal-library save in the normal browser profile and verify
+   actual child files, not just descriptors.
+4. Commit each publisher translator separately. Commit a truly universal
+   Connector or Desktop change independently with its own tests. Update all
+   relevant submodule pins only after the publisher commit is final.
 
 Useful initial inventory:
 
