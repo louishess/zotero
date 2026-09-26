@@ -79,9 +79,6 @@
 		"name": "extensions.zotero.cite.automaticJournalAbbreviations"
 	},
 	{
-		"name": "extensions.zotero.cite.useCiteprocRs"
-	},
-	{
 		"name": "extensions.zotero.dataDir"
 	},
 	{
@@ -432,6 +429,9 @@
 	},
 	{
 		"name": "extensions.zotero.reader.lightTheme"
+	},
+	{
+		"name": "extensions.zotero.reader.popupPositions"
 	},
 	{
 		"name": "extensions.zotero.reader.readAloud.highlightGranularity"

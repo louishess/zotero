@@ -6,14 +6,6 @@
 	path = styles
 	url = https://github.com/zotero/bundled-styles.git
 	branch = master
-[submodule "test/resource/chai"]
-	path = test/resource/chai
-	url = https://github.com/chaijs/chai.git
-	branch = master
-[submodule "test/resource/mocha"]
-	path = test/resource/mocha
-	url = https://github.com/mochajs/mocha.git
-	branch = master
 [submodule "resource/schema/global"]
 	path = resource/schema/global
 	url = https://github.com/zotero/zotero-schema.git

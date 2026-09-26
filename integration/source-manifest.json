@@ -1,39 +1,91 @@
 {
+  "schemaVersion": 2,
   "scope": "ZoteroMerge: SI downloads, three-mode PDF annotations, citation cloud folders mirroring collections, per-type download controls, and searchable Config Editor",
   "branch": "ZoteroMerge",
-  "annotationBase": "52ac324e2bc9ed3df7726bd098997155293bf4ac",
-  "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
-  "mergeCommit": "c376949763febbfb7a2814e80cf32b62d2aee227",
-  "translatorPinCommit": "761b7eeb5ff472d485687822eb624f5e67e5c7b6",
-  "connector": "5469528007c74c6c3e365b6e3b176cd43e34dd66",
-  "connectorZotero": "b7a0f1bab34b249779f2214990922d117defe238",
-  "documentWorker": "731026106dabe56aef921351b7c3480678ee25fc",
-  "translators": "4e4574c0ee1b468191aa8de2214c2a4332892bff",
-  "workerBundlePrerequisite": "6d0c0ce45d96a4ed5b697927306b1e9207a02041",
-  "lockfileSHA256": {
-    "desktop": "439557d300fd590b8e9cf1004f055fd6ece636647c7ec25e9132e6e9e36c6585",
-    "connector": "da51a2bea1ee09fe864dd1513195e6b2e7a710862181aa6f9848be0c8ed1c6e0",
-    "documentWorker": "aea312f94f131665e4fbfd78b7f7ae075db668b1a043d04e57c416b5d18328eb"
+  "repository": "https://github.com/louishess/zotero",
+  "frozenDateUTC": "2026-09-26",
+  "components": {
+    "desktop": {
+      "path": ".",
+      "origin": "https://github.com/zotero/zotero",
+      "importedRevision": "bcdfa20b83212d8cc8817631481157621b5f4010",
+      "upstreamRevision": "8c3b967bf9f7ed2a44bdf8c6a70b7c65489b8cfb"
+    },
+    "connector": {
+      "path": "connector",
+      "origin": "https://github.com/zotero/zotero-connectors",
+      "customOrigin": "https://github.com/louishess/Zotero-SI-Fix",
+      "importedRevision": "4c8c9f9c3f1efb4d268ee158ecf85f0aa9c40402",
+      "upstreamRevision": "876e41ad15139077f2e07b2f71a0fa94742e0b4a"
+    },
+    "documentWorker": {
+      "path": "document-worker",
+      "origin": "https://github.com/zotero/document-worker",
+      "customOrigin": "https://github.com/louishess/document-worker",
+      "importedRevision": "731026106dabe56aef921351b7c3480678ee25fc",
+      "upstreamRevision": "8fb70af4000873561c82b2f4eb88be190efb9979"
+    },
+    "translators": {
+      "path": "translators",
+      "origin": "https://github.com/zotero/translators",
+      "customOrigin": "https://github.com/louishess/translators",
+      "importedRevision": "4e4574c0ee1b468191aa8de2214c2a4332892bff",
+      "upstreamRevision": "c83003773b65359e41466e1d419b2d1df5512af7"
+    }
   },
-  "node": "v26.5.0",
-  "npm": "11.17.0",
-  "validatedIntegration": "c3d91b11a0e685af7f225b4591ac77ed936ab326",
-  "connectorFeatureSource": "4c0baf1a7a975b31867eb9a1280aaf5a3fdd9925",
-  "masterGuide": "AGENTS.md",
-  "completionStatus": "requested-feature-update-and-user-capped-journal-batch-complete; wider-journal-coverage-deferred",
-  "zoteroMergeBaseline": {
-    "desktop": "637a88cca9c415504b094e41c48c0eb51a8dfbaa",
-    "connector": "659335473613664bfef3d08e64fe52d7c80e1005"
+  "connectorDesktopPin": "01ebeb183439bbd79797bbcd4a41e99aad099ab8",
+  "dependencies": {
+    "app/modules/zotero-libreoffice-integration": "227551c1644c6cb1156226d4db5d1b293fdb271d",
+    "app/modules/zotero-word-for-mac-integration": "300886d1984de7a0006d7a48310baa0c8c99bea0",
+    "app/modules/zotero-word-for-windows-integration": "c0aa6e4bef039d94e17e81cb28b1fe9170c45b96",
+    "chrome/content/zotero/locale/csl": "bc0a222b4ca526126faf892c35b2b7b1215c10eb",
+    "chrome/content/zotero/xpcom/translate": "dd524aea9a556cd23eb9dc8cc617219a98d0fb47",
+    "chrome/content/zotero/xpcom/utilities": "4051881d59c6c12d34417d4c226f37218051be90",
+    "connector/src/translate": "485ac36edbd66459e2aa3bad4d4b36921be2c7c2",
+    "connector/src/utilities": "cccf1235a318c259345fc623d5e9d6770ba19df7",
+    "connector/src/zotero": "01ebeb183439bbd79797bbcd4a41e99aad099ab8",
+    "connector/src/zotero-google-docs-integration": "a46413151134ad699c351ac42ecbbe9c76c8e6cc",
+    "connector/src/zotero-schema": "b5b3f51217a99b3c41585d468ee1dc0837233d13",
+    "document-worker/pdf.js": "f4d05caed86bd38f6ccd2171dbbd5cb832d72912",
+    "document-worker/structured-document-text": "7963c11faac4595be3bbe86b7574704a22c67bed",
+    "note-editor": "acec74d09b910cfb67e6fa05135faca06f525c11",
+    "reader": "e7a93982baaee820e1bf5604dbf7f86400c98272",
+    "resource/SingleFile": "0bca0227851348ef9bbaec780e88deb32b1cc03d",
+    "resource/schema/global": "b86c79b56479cadac3288e1f122cf34ef04e8809",
+    "styles": "dff7452b247935809c93c993f92ad135ffb1dd91"
   },
-  "prototypeInputSHA256": {
-    "ZoteroFileAnnotations/chrome/content/zotero/xpcom/linkedFolderAttachmentManager.js": "a8e17323a8c333a38ce321f135ec9b297368fa08cf272cb2acdeb2a876e9d790",
-    "ZoteroFileAnnotations/chrome/content/zotero/xpcom/linkedFolderProviders.js": "f79f0261231e629f7e496638ebd42f525e3ac392616275fe237cc5af2e5c62cb",
-    "ZoteroFileAnnotations/test/tests/linkedFolderAttachmentManagerTest.js": "0638807f4370212ae20cfa54dab71d3b3749b1b8d3a9de76e52a68b3ccc1ab89",
-    "ZoteroFileAnnotations/test/tests/linkedFolderProvidersTest.js": "2973dcf76c61881715fdab7d1138277ff2a8185640f5167ed36c972d1283a9b6",
-    "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/automaticAttachmentDownloads.js": "fbcadaf2619f0eba990d61101e300f637523f5542ccab42182ed155dcf8fd86d",
-    "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/translation/translate_item.js": "b13087bc3fb61a18652048423367be3461373a16450518afd232585c8c355237",
-    "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/storage/storageLocal.js": "d5f53feb311abca4bd5af54b5b085ec012120812dd873184909ce23f23ab86ae",
-    "ZoteroAutomaticDownloads/test/tests/automaticAttachmentDownloadsTest.js": "3981ecd58004f19dc7b9dbf0567273dda55dd3b154d625a31cd64b6c8a7a6204"
+  "build": {
+    "worker": "local owned source; source-content cache key",
+    "gecko": "153.3.0esr",
+    "node": "26.5.0",
+    "npm": "11.17.0",
+    "connectorVersion": "4.999.2026.926",
+    "install": false
+  },
+  "preservation": {
+    "baselineTag": "preservation/validated-consolidated-baseline",
+    "legacyRefPrefix": "preservation/legacy/",
+    "archive": "../ZoteroMerge-archive/2026-09-25/original-files.tar",
+    "archiveSHA256": "c6af256d7617efe385c419c8219defb28d7556cd79540fa9019cdec09d49e614",
+    "verification": "../ZoteroMerge-archive/2026-09-25/recovery-verification.json"
+  },
+  "historicalInputs": {
+    "annotationBase": "52ac324e2bc9ed3df7726bd098997155293bf4ac",
+    "siDesktop": "522858cc890bb83ff71a1725a332ac5c7dc2fab9",
+    "zoteroMergeBaseline": {
+      "desktop": "637a88cca9c415504b094e41c48c0eb51a8dfbaa",
+      "connector": "659335473613664bfef3d08e64fe52d7c80e1005"
+    },
+    "prototypeInputSHA256": {
+      "ZoteroFileAnnotations/chrome/content/zotero/xpcom/linkedFolderAttachmentManager.js": "a8e17323a8c333a38ce321f135ec9b297368fa08cf272cb2acdeb2a876e9d790",
+      "ZoteroFileAnnotations/chrome/content/zotero/xpcom/linkedFolderProviders.js": "f79f0261231e629f7e496638ebd42f525e3ac392616275fe237cc5af2e5c62cb",
+      "ZoteroFileAnnotations/test/tests/linkedFolderAttachmentManagerTest.js": "0638807f4370212ae20cfa54dab71d3b3749b1b8d3a9de76e52a68b3ccc1ab89",
+      "ZoteroFileAnnotations/test/tests/linkedFolderProvidersTest.js": "2973dcf76c61881715fdab7d1138277ff2a8185640f5167ed36c972d1283a9b6",
+      "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/automaticAttachmentDownloads.js": "fbcadaf2619f0eba990d61101e300f637523f5542ccab42182ed155dcf8fd86d",
+      "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/translation/translate_item.js": "b13087bc3fb61a18652048423367be3461373a16450518afd232585c8c355237",
+      "ZoteroAutomaticDownloads/chrome/content/zotero/xpcom/storage/storageLocal.js": "d5f53feb311abca4bd5af54b5b085ec012120812dd873184909ce23f23ab86ae",
+      "ZoteroAutomaticDownloads/test/tests/automaticAttachmentDownloadsTest.js": "3981ecd58004f19dc7b9dbf0567273dda55dd3b154d625a31cd64b6c8a7a6204"
+    }
   },
   "pendingLiveAcceptance": {
     "providers": [
@@ -44,16 +96,7 @@
     "twoMacs": true,
     "availability": "User has no second Mac currently; Dropbox and Google Drive are not configured."
   },
-  "localValidation": {
-    "desktopCombined": "261/261",
-    "connector": "113 passing; 9 opt-in live diagnostics pending",
-    "workerPDF": "188/188; typecheck passed",
-    "permanentDeletionUI": "3/3",
-    "collectionHierarchyConfigEditor": "100/100 focused Gecko integration tests; 2026-09-06",
-    "journalFixtures": "13 named-journal fixture suites; six ScienceDirect legacy regression tests",
-    "journalConnectorHarness": "8 passing on rebuilt Connector; includes the six ScienceDirect tests",
-    "journalTransfers": "Two live current-layout controls: Springer mainPDF+DOCX and Frontiers mainPDF+SIPDF; four saved files hash/format verified"
-  },
-  "packagedDesktopFeatureCommit": "1e4dabc911be344948462f991d001daddfc49f0f",
-  "reviewArtifactDirectory": "../combined-review/ZoteroMerge-20260906"
+  "acceptanceEvidence": "../ZoteroMerge-artifacts/2026-09-25",
+  "audit": "docs/efficiency-audit.md",
+  "note": "A committed manifest describes inputs, not its own commit. Exact package commits and checksums belong in the external release manifest."
 }
