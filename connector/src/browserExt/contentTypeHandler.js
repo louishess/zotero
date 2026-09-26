@@ -181,7 +181,8 @@ Zotero.ContentTypeHandler = {
 
 	_shouldImportStyle: async function(tabId) {
 		if (!(await Zotero.Connector.checkIsOnline())) return false
-		let response = await Zotero.ContentTypeHandler.confirm(`Add citation style to Zotero?`, tabId)
+		let response = await Zotero.ContentTypeHandler.confirm(
+			Zotero.getString('contentTypeHandler_addStyle', ZOTERO_CONFIG.CLIENT_NAME), tabId)
 		return response && response.button === 1;
 	},
 
@@ -217,9 +218,9 @@ Zotero.ContentTypeHandler = {
 		if (isEnabledHost) {
 			return true;
 		} else {
-			let response = await Zotero.ContentTypeHandler.confirm(`Import items from ${URI.host} into Zotero?<br/><br/>` +
-				'You can manage automatic file importing in Zotero Connector preferences.', tabId,
-				'Always allow for this site')
+			let response = await Zotero.ContentTypeHandler.confirm(
+				Zotero.getString('contentTypeHandler_import', [ZOTERO_CONFIG.CLIENT_NAME, URI.host]), tabId,
+				Zotero.getString('contentTypeHandler_import_allow'))
 			if (response && response.button == 1) {
 				if (!isEnabledHost && response.checkboxChecked) {
 					hosts.push(URI.host);
@@ -324,13 +325,15 @@ Zotero.ContentTypeHandler = {
 			await Zotero.Connector_Browser.waitForTabToLoad(tab);
 		}
 		
-		var props = {message};
+		var props = {
+			title: Zotero.getString('appConnector', ZOTERO_CONFIG.CLIENT_NAME),
+			button1Text: Zotero.getString('general_ok'),
+			button2Text: Zotero.getString('general_cancel'),
+			message
+		};
 		if (checkboxText.length) {
-			props = {
-				message,
-				checkbox: true,
-				checkboxText
-			}
+			props.checkbox = true;
+			props.checkboxText = checkboxText;
 		}
 		return this._sendMessageAndHandleBlankPage('confirm', props, tab);
 	},
@@ -340,19 +343,29 @@ Zotero.ContentTypeHandler = {
 	 */
 	importFile: async function(url, tabId, type) {
 		var sessionID = Zotero.Utilities.randomString();
-		var headline = type == 'csl' ? 'Installing Style' : null;
+		var headline = type == 'csl' ? Zotero.getString('contentTypeHandler_installingStyle') : null;
 		var readOnly = type == 'csl';
 		var tab = await browser.tabs.get(tabId);
 		this._sendMessageAndHandleBlankPage('progressWindow.show', [sessionID, headline, readOnly], tab);
 	
-		let response = await fetch(url);
-		let responseText = await response.text();
+		let cookies = [];
+		try {
+			cookies = await Zotero.Connector_Browser.getAllCookies({ url, partitionKey: {} }, tabId);
+		}
+		catch (e) {}
+		let response = await Zotero.HTTP.request('GET', url, {
+			successCodes: false,
+			headers: {
+				"Cookie": cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ')
+			},
+		});
+		let responseText = response.responseText;
 		if (response.status < 200 || response.status >= 400) {
 			throw Error(`IMPORT: Retrieving ${url} failed with status ${response.status}.\nResponse body:\n${responseText}`);
 		}
 		let options = {
 			headers: {
-				"Content-Type": response.headers.get('Content-Type')
+				"Content-Type": response.getResponseHeader('Content-Type')
 			}
 		};
 		// Style installation
@@ -401,7 +414,7 @@ Zotero.ContentTypeHandler = {
 				Zotero.Messaging.sendMessage('progressWindow.done', [true], tab);
 			}
 			catch(e) {
-				let err = 'clientRequired';
+				let err = e.status == 0 ? 'clientRequired' : 'unexpectedError';
 				if (e.status == 500 && e.value && e.value.libraryEditable === false) {
 					err = 'collectionNotEditable';
 				}

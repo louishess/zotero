@@ -29,6 +29,7 @@ Zotero.Connector = new function() {
 	const CONNECTOR_API_VERSION = 3;
 	const TRANSLATOR_PREFS_VERSION = 1;
 	const TRANSLATOR_PREFS_NAMESPACE = 'translators.';
+	const PASSIVE_METHODS = new Set(['ping', 'getTranslatorCode', 'getTranslators', 'getClientHostnames']);
 	
 	this.isOnline = (Zotero.isSafari || Zotero.isFirefox) ? false : null;
 	this.clientVersion = '';
@@ -39,11 +40,19 @@ Zotero.Connector = new function() {
 	this.automaticAttachmentDownloads = null;
 	
 	/**
-	 * Checks if Zotero is online and passes current status to callback
+	 * Checks if Zotero is online
+	 * @returns {Promise<Boolean|null>} - null if Safari blocked the localhost request or the
+	 *     request was skipped without localhost access, leaving Zotero's status unknown
 	 */
-	this.checkIsOnline = async function() {
+	this.checkIsOnline = async function({active=false, permissionPromptShown=false}={}, tab=null) {
+		let hadLocalhostPermission = true;
+		if (Zotero.isSafari && active) {
+			hadLocalhostPermission = await browser.permissions.contains({
+				origins: ["http://127.0.0.1/*"]
+			});
+		}
 		try {
-			await this.ping({});
+			await this.ping({}, {active, permissionPromptShown}, tab);
 			return true;
 		} catch (e) {
 			// A failed ping cannot provide authoritative desktop preferences. Restore
@@ -55,6 +64,22 @@ Zotero.Connector = new function() {
 				Zotero.debug("Checking if Zotero is online returned a non-zero HTTP status.");
 				Zotero.logError(e);
 				return true;
+			}
+			if (Zotero.isSafari) {
+				const hasLocalhostPermission = await browser.permissions.contains({
+					origins: ["http://127.0.0.1/*"]
+				});
+				if (!hasLocalhostPermission) {
+					// Zotero's status is unknown when the request was blocked or skipped without
+					// localhost access.
+					return null;
+				}
+				if (active && !hadLocalhostPermission) {
+					// The user granted access in Safari's permission dialog after the request had
+					// already been blocked, so the failure says nothing about Zotero's status --
+					// ping again
+					return this.checkIsOnline({active, permissionPromptShown: true}, tab);
+				}
 			}
 			return false;
 		}
@@ -187,8 +212,8 @@ Zotero.Connector = new function() {
 		}
 	}
 	
-	this.ping = async function(payload={}) {
-		let response = await Zotero.Connector.callMethod("ping", payload);
+	this.ping = async function(payload={}, options={}, tab=null) {
+		let response = await Zotero.Connector.callMethod({method: "ping", ...options}, payload, tab);
 		if (response && typeof response === 'object' && !Array.isArray(response)
 				&& response.prefs && typeof response.prefs === 'object'
 				&& !Array.isArray(response.prefs)) {
@@ -201,8 +226,8 @@ Zotero.Connector = new function() {
 		return response || {};
 	}
 	
-	this.getClientVersion = async function() {
-		let isOnline = await this.checkIsOnline();
+	this.getClientVersion = async function(options={}, tab=null) {
+		let isOnline = await this.checkIsOnline({...options, active: options.active ?? !!tab}, tab);
 		return isOnline && this.clientVersion;
 	}
 	
@@ -223,6 +248,32 @@ Zotero.Connector = new function() {
 			options = {method: options};
 		}
 		var method = options.method;
+		let localhostPermissionMissing = false;
+		if (Zotero.isSafari) {
+			const hasLocalhostPermission = await browser.permissions.contains({
+				origins: ["http://127.0.0.1/*"]
+			});
+			if (!hasLocalhostPermission) {
+				localhostPermissionMissing = true;
+				const isActive = options.active || !PASSIVE_METHODS.has(method);
+				if (!isActive) {
+					throw new Zotero.Connector.CommunicationError(
+						`Connector: Skipping passive ${method} request without localhost permission`
+					);
+				}
+				// Skip the explanation once a blocked request has shown that Safari won't
+				// display its permission dialog -- the error handling for the failed request
+				// points to Safari Settings instead
+				if (!options.permissionPromptShown && !Zotero.HostPermissions.localhostRequestBlocked) {
+					// This request can trigger Safari's own permission dialog for localhost, where
+					// the user can also grant all-websites access
+					await Zotero.HostPermissions.prompt(
+						{domains: ['127.0.0.1'], recommendAllHosts: true, nativePromptToFollow: true},
+						tab
+					);
+				}
+			}
+		}
 		var headers = Object.assign({
 				"Content-Type":"application/json",
 				"X-Zotero-Version":Zotero.version,
@@ -267,7 +318,11 @@ Zotero.Connector = new function() {
 					val = xhr.responseText;
 				}
 			}
-			if (xhr.status === 0) {
+			// Zotero error responses bear an identifying header. If it's missing, treat the
+			// response like a connection failure so existing save flows show their "Is Zotero
+			// Running?" prompt instead of reporting an error from an unrelated localhost server.
+			if (xhr.status === 0 || (xhr.status >= 400
+					&& !xhr.getResponseHeader('X-Zotero-Version'))) {
 				Zotero.Connector._processTranslatorPreferences();
 				Zotero.Connector._clearAutomaticAttachmentDownloads();
 				if (Zotero.Connector.isOnline !== false) {
@@ -295,6 +350,10 @@ Zotero.Connector = new function() {
 		} catch (e) {
 			if (e && e.status === 0) {
 				Zotero.Connector._clearAutomaticAttachmentDownloads();
+			}
+			if (localhostPermissionMissing && e.status == 0
+					&& !await browser.permissions.contains({origins: ["http://127.0.0.1/*"]})) {
+				Zotero.HostPermissions.localhostRequestBlocked = true;
 			}
 			if (!(e instanceof Zotero.Connector.CommunicationError) && !(e instanceof Zotero.HTTP.StatusError)){
 				// Unexpected error, including a timeout

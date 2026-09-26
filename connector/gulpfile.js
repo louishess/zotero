@@ -27,7 +27,7 @@
 
 const path = require('path');
 const replaceBrowser = require('./scripts/replace_browser');
-const exec = require('child_process').exec;
+const spawn = require('child_process').spawn;
 const through = require('through2');
 const gulp = require('gulp');
 const plumber = require('gulp-plumber');
@@ -101,7 +101,7 @@ var injectIncludeFirefox = ['browser-polyfill.js'].concat(
 	['api.js'],
 	injectIncludeLast);
 
-var injectIncludeSafari = ['browser-polyfill.js'].concat(
+var injectIncludeSafari = ['reinjectGuard.js', 'browser-polyfill.js'].concat(
 	injectInclude,
 	['api.js'],
 	['frameMessaging.js'],
@@ -158,6 +158,7 @@ if (!argv.p) {
 	injectIncludeManifestV3.push('test/testInject.js');
 }
 var backgroundIncludeBrowserExt = ['browser-polyfill.js'].concat(backgroundInclude, [
+	'hostPermissions.js',
 	'webRequestIntercept.js',
 	'contentTypeHandler.js',
 	'saveWithoutProgressWindow.js',
@@ -166,23 +167,32 @@ var backgroundIncludeBrowserExt = ['browser-polyfill.js'].concat(backgroundInclu
 	'offscreen/offscreenFunctionOverrides.js', 'background/offscreenManager.js',
 ]);
 
-function reloadChromeExtensionsTab(cb) {
-	console.log("Reloading Chrome extensions tab");
-
-
-	exec('chrome-cli list tabs', function (err, stdout) {
-		if (err) cb(err);
-
-		var extensionsTabMatches = stdout.match(/\[\d{1,5}:(\d{1,5})\] Extensions/);
-		if (extensionsTabMatches) {
-			var extensionsTabID = extensionsTabMatches[1];
-
-			exec('chrome-cli reload -t ' + extensionsTabID)
+var reloadChromiumTimeout;
+var chromiumReloadProcess;
+function reloadChromiumExtension() {
+	clearTimeout(reloadChromiumTimeout);
+	reloadChromiumTimeout = setTimeout(function () {
+		if (!chromiumReloadProcess) {
+			chromiumReloadProcess = spawn(
+				path.join(__dirname, 'scripts/reload-chromium-extension'),
+				['--persistent'],
+				{ stdio: ['pipe', 'inherit', 'inherit'] }
+			);
+			chromiumReloadProcess.on('error', function (error) {
+				console.error(`Failed to start Chromium extension reloader: ${error.message}`);
+			});
+			chromiumReloadProcess.stdin.on('error', function (error) {
+				if (error.code !== 'EPIPE') {
+					console.error(`Failed to request Chromium extension reload: ${error.message}`);
+				}
+			});
+			chromiumReloadProcess.on('close', function (code) {
+				chromiumReloadProcess = null;
+				if (code) console.error(`Chromium extension reloader exited with code ${code}`);
+			});
 		}
-		else {
-			exec('chrome-cli open chrome://extensions && chrome-cli reload')
-		}
-	});
+		chromiumReloadProcess.stdin.write('\n');
+	}, 250);
 }
 
 function replaceScriptsHTML(string, match, scripts) {
@@ -334,6 +344,17 @@ function processFile() {
 								backgroundScripts.map((s) => `"${s}"`).join(',\n\t\t\t'))
 							.replace("/*INJECT SCRIPTS*/",
 								injectScripts.map((s) => `"${s}"`).join(',\n\t\t\t'))
+						if (basename == 'manifest.json' && browser == 'safari') {
+							// Safari runs content scripts only on sites where the user has granted
+							// access, so the pre-detection gray webpage icon can show indefinitely --
+							// default to the Z instead
+							let manifest = JSON.parse(contents);
+							manifest.browser_action.default_icon = {
+								16: "images/zotero-z-16px.png",
+								32: "images/zotero-z-32px.png"
+							};
+							contents = JSON.stringify(manifest, null, '\t');
+						}
 					}
 					
 					contents = contents
@@ -398,15 +419,15 @@ gulp.task('watch', function () {
 	});
 });  
 
-gulp.task('watch-chrome', function () {
+gulp.task('watch-chromium', function () {
 	var watcher = gulp.watch(['./src/browserExt/**', './src/common/**', './src/safari/**',
 		'./src/zotero-google-docs-integration/src/connector/**']);
-	watcher.on('change', function(event) {
-		gulp.src(event.path)
+	watcher.on('change', function(filePath) {
+		gulp.src(filePath)
 			.pipe(plumber())
 			.pipe(processFile())
 			.pipe(gulp.dest((data) => data.base))
-			.on('close', reloadChromeExtensionsTab);
+			.on('end', reloadChromiumExtension);
 	});
 });
 

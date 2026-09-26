@@ -502,6 +502,7 @@ ItemSaver.prototype = {
 		Zotero.debug(`ItemSaver._saveToServer: Saving ${items.length} items to server`);
 		await this._loadAutomaticAttachmentPolicy();
 		var newItems = [], itemIndices = [];
+		const automaticTags = await Zotero.Prefs.getAsync("automaticTags");
 		
 		for(var i=0, n=items.length; i<n; i++) {
 			var item = items[i];
@@ -512,7 +513,11 @@ ItemSaver.prototype = {
 				item.url = this._proxy.toProper(item.url);
 			}
 			itemIndices[i] = newItems.length;
-			newItems = newItems.concat(Zotero.Utilities.Item.itemToAPIJSON(item));
+			let apiItem = Zotero.Utilities.deepCopy(item);
+			if (!automaticTags && Array.isArray(apiItem.tags)) {
+				apiItem.tags = apiItem.tags.filter(tag => typeof tag !== 'object' || tag.type !== 1);
+			}
+			newItems = newItems.concat(Zotero.Utilities.Item.itemToAPIJSON(apiItem));
 			for (let attachment of item.attachments) {
 				attachment.id = Zotero.Utilities.randomString();
 			}
@@ -597,24 +602,24 @@ ItemSaver.prototype = {
 
 			attachment.parentKey = itemKey;
 
-			switch (attachment.mimeType.toLowerCase()) {
-			case "application/pdf":
-				attachment.filename = baseName+".pdf";
-				break;
-			case "text/html":
-			case "application/xhtml+xml":
-				attachment.filename = baseName+".html";
-				attachment.data = await Zotero.SingleFile.retrievePageData();
-				break;
-			default:
-				attachment.filename = baseName;
-			}
-
-			// Don't download attachment if snapshot is specifically set to false
-			attachment.linkMode = attachment.snapshot === false ? "linked_url" : "imported_url";
-
 			promises.push((async () => {
 				try {
+					switch (attachment.mimeType.toLowerCase()) {
+					case "application/pdf":
+						attachment.filename = baseName+".pdf";
+						break;
+					case "text/html":
+					case "application/xhtml+xml":
+						attachment.filename = baseName+".html";
+						attachment.data = await Zotero.SingleFile.retrievePageData();
+						break;
+					default:
+						attachment.filename = baseName;
+					}
+
+					// Don't download attachment if snapshot is specifically set to false
+					attachment.linkMode = attachment.snapshot === false ? "linked_url" : "imported_url";
+
 					await ItemSaver.fetchAttachmentSafari(attachment);
 					let result = await Zotero.ItemSaver.saveAttachmentToServer(attachment,
 						{ automatic: this._automatic, force: this._force });

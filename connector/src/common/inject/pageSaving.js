@@ -280,7 +280,7 @@ let PageSaving = {
 			var { items, proxy } = await Zotero.TranslateWeb.translate(options);
 		} catch (e) {
 			if (translators[0].itemType != 'multiple' && fallbackOnFailure) {
-				Zotero.Messaging.sendMessage("progressWindow.error", ['fallback', this.translators.at(-1).label, "Save as Webpage"]);
+				Zotero.Messaging.sendMessage("progressWindow.error", ['fallback', this.translators.at(-1).label, Zotero.getString('progressWindow_saveAsWebpage')]);
 				Zotero.debug(`Saving with ${translators[0].label} failed. Falling back to saving as webpage`);
 				return this.saveAsWebpage({ snapshot: true });
 			}
@@ -397,7 +397,7 @@ let PageSaving = {
 				sessionID: data.sessionID,
 				id: 2,
 				iconSrc: Zotero.ItemTypes.getImageSrc("attachment-snapshot"),
-				title: "Snapshot",
+				title: Zotero.getString('itemType_snapshot'),
 				parentItem: 1,
 				parentKey: item.key,
 				progress: 0,
@@ -410,23 +410,29 @@ let PageSaving = {
 
 			Zotero.Messaging.sendMessage("progressWindow.itemProgress", snapshotItem);
 
-			const snapshotContent = await Zotero.SingleFile.retrievePageData();
+			try {
+				const snapshotContent = await Zotero.SingleFile.retrievePageData();
 
-			if (toServer) {
-				snapshotItem.data = snapshotContent;
-				await Zotero.ItemSaver.saveAttachmentToServer(snapshotItem);
-			}
-			else {
-				data.snapshotContent = snapshotContent;
-				await Zotero.Connector.saveSingleFile({
-						method: "saveSingleFile",
-						headers: {"Content-Type": "application/json"}
-					},
-					data
-				);
-			}
+				if (toServer) {
+					snapshotItem.data = snapshotContent;
+					await Zotero.ItemSaver.saveAttachmentToServer(snapshotItem);
+				}
+				else {
+					data.snapshotContent = snapshotContent;
+					await Zotero.Connector.saveSingleFile({
+							method: "saveSingleFile",
+							headers: {"Content-Type": "application/json"}
+						},
+						data
+					);
+				}
 
-			Zotero.Messaging.sendMessage("progressWindow.itemProgress", { ...snapshotItem, progress: 100 });
+				Zotero.Messaging.sendMessage("progressWindow.itemProgress", { ...snapshotItem, progress: 100 });
+			}
+			catch (e) {
+				Zotero.logError(e);
+				Zotero.Messaging.sendMessage("progressWindow.itemProgress", { ...snapshotItem, progress: false });
+			}
 		}
 	},
 
@@ -620,6 +626,7 @@ let PageSaving = {
 		
 		// In some cases, we just reopen the popup instead of saving again
 		if (this._shouldReopenProgressWindow(translatorID, options)) {
+			Zotero.debug(`PageSaving.onSaveAsWebpage: Reopening popup`);
 			return Zotero.Messaging.sendMessage("progressWindow.show", [this.sessionDetails.id]);
 		}
 		

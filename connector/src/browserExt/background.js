@@ -109,32 +109,87 @@ Zotero.Connector_Browser = new function() {
 	}
 
 	/**
-	 * Gets cookies from the store associated with a tab. In Safari, the default cookie store
-	 * may differ from the store used by browser tabs, so it must be resolved at runtime. If
-	 * no tab is provided, the active tab in the current window is used.
+	 * Gets cookies from the store associated with a tab.
+	 * 
+	 * In Safari, the default cookie store may differ from the store used by browser tabs,
+	 * so it must be resolved at runtime.
+	 * 
+	 * In Firefox First Party Isolation requires additional properties to correctly return
+	 * only the relevant cookies
+	 * 
+	 * If no tab is provided, the active tab in the current window is used.
 	 *
 	 * @param {Object} details
-	 * @param {Number} tabId
+	 * @param {browser.tabs.Tab} tab
 	 * @return {Promise<browser.cookies.Cookie[]>}
 	 */
-	this.getAllCookies = async function(details, tabId=null) {
-		details = {...details};
-		if (!Zotero.isSafari || details.storeId) {
+	this.getAllCookies = async function(details, tab=null) {
+		if (!Zotero.isFirefox && !Zotero.isSafari) {
 			return browser.cookies.getAll(details);
 		}
-
-		if (tabId === null) {
+		
+		if (Zotero.isSafari && details.storeId) {
+			return browser.cookies.getAll(details);
+		}
+		
+		details = {...details};
+		
+		if (tab == null) {
 			let tabs = await browser.tabs.query({active: true, currentWindow: true});
-			tabId = tabs[0]?.id;
+			tab = tabs[0];
 		}
 
-		let stores = await browser.cookies.getAllCookieStores();
-		let store = stores.find(store => store.tabIds.includes(tabId))
-			|| stores.find(store => store.tabIds.length)
-			|| stores[0];
-		if (store) {
-			details.storeId = store.id;
+		if (Zotero.isFirefox) {
+			if (tab.cookieStoreId) {
+				details.storeId = tab.cookieStoreId;
+			}
 		}
+		else {
+			let stores = await browser.cookies.getAllCookieStores();
+			let store = stores.find(store => store.tabIds.includes(tab.id))
+				|| stores.find(store => store.tabIds.length)
+				|| stores[0];
+			if (store) {
+				details.storeId = store.id;
+			}
+		}
+		
+		if (Zotero.isFirefox && !details.hasOwnProperty('firstPartyDomain')) {
+			try {
+				return await browser.cookies.getAll(details);
+			}
+			catch (_) {
+				// Throws if First-Party Isolation is enabled. We have to set a 
+				// firstPartyDomain property that makes sense.
+				let hostname;
+				try {
+					hostname = new URL(tab.url).hostname;
+				}
+				catch (error) {
+					// Tab url doesn't have a hostname that parses
+					// so we return empty cookies
+					Zotero.logError(error);
+					return [];
+				}
+
+				let cookies = await browser.cookies.getAll({
+					...details,
+					firstPartyDomain: null,
+				});
+				let firstPartyDomain = cookies
+					.map(cookie => cookie.firstPartyDomain)
+					.filter(domain => domain
+						&& (hostname === domain || hostname.endsWith(`.${domain}`)))
+					.sort((a, b) => b.length - a.length)[0];
+				if (!firstPartyDomain) return [];
+				
+				return browser.cookies.getAll({
+					...details,
+					firstPartyDomain,
+				});
+			}
+		}
+
 		return browser.cookies.getAll(details);
 	}
 
@@ -257,16 +312,15 @@ Zotero.Connector_Browser = new function() {
 	};
 	
 	/**
-	 * Called if Zotero version is determined to be incompatible with Standalone
+	 * Called if the Zotero Connector version is incompatible with the Zotero client
 	 */
-	this.onIncompatibleStandaloneVersion = function(zoteroVersion, standaloneVersion) {
-		if(_incompatibleVersionMessageShown) return;
-		alert('Zotero Connector for Chrome '+zoteroVersion+' is incompatible with the running '+
-			'version of Zotero Standalone'+(standaloneVersion ? " ("+standaloneVersion+")" : "")+
-			'. Zotero Connector will continue to operate, but functionality that relies upon '+
-			'Zotero Standalone may be unavailable.\n\n'+
-			'Please ensure that you have installed the latest version of these components. See '+
-			'https://www.zotero.org/download for more details.');
+	this.onIncompatibleStandaloneVersion = function(connectorVersion, clientVersion) {
+		if (_incompatibleVersionMessageShown) return;
+		alert(Zotero.getString('browserAction_incompatibleVersion', [
+			ZOTERO_CONFIG.CLIENT_NAME,
+			connectorVersion,
+			clientVersion ? " (" + clientVersion + ")" : ""
+		]));
 		_incompatibleVersionMessageShown = true;
 	}
 
@@ -356,12 +410,12 @@ Zotero.Connector_Browser = new function() {
 		}
 		deferred = Zotero.Promise.defer();
 		this.injectTranslationScripts[key] = deferred;
-		
-		let response = await Zotero.Messaging.sendMessage('ping', null, tab, frameId)
-		if (response && frameId == 0) return deferred.resolve();
-		url = url ? `${url} - ${tab.url}` : tab.url
-		Zotero.debug(`Injecting translation scripts into ${frameId} ${url}`);
+
 		try {
+			let response = await Zotero.Messaging.sendMessage('ping', null, tab, frameId)
+			if (response && frameId == 0) return deferred.resolve();
+			url = url ? `${url} - ${tab.url}` : tab.url
+			Zotero.debug(`Injecting translation scripts into ${frameId} ${url}`);
 			return await Zotero.Connector_Browser.injectScripts(_injectTranslationScripts, tab, frameId);
 		} catch (e) {
 			Zotero.debug(`Translation Inject: Script injection rejected ${key}`);
@@ -664,6 +718,14 @@ Zotero.Connector_Browser = new function() {
 		var isPDF = tabInfo.isPDF;
 		var translators = tabInfo.translators;
 		
+		// Safari runs content scripts only on sites where the user has granted access, and
+		// clicking the button on other sites enables the Connector on the site instead of
+		// saving. Until a content script reports detection results, keep the default Z icon
+		// rather than showing a save action that hasn't been determined.
+		if (Zotero.isSafari && !translators && !isPDF) {
+			return;
+		}
+		
 		// Show the save menu if we have more than one save option to show, which is true in all cases
 		// other than for PDFs with no translator
 		var showSaveMenu = (translators && translators.length) || !isPDF;
@@ -761,8 +823,11 @@ Zotero.Connector_Browser = new function() {
 			// it's not treated like we do it within a gesture
 			await browser.permissions.request({permissions: ['clipboardWrite']});
 		}
-		const shouldContinue = await _checkPermissions(tab);
+		const shouldContinue = await Zotero.HostPermissions.checkChromiumActionPermissions(tab);
 		if (!shouldContinue) {
+			return;
+		}
+		if (!await _ensureScriptsInjected(tab)) {
 			return;
 		}
 
@@ -797,10 +862,16 @@ Zotero.Connector_Browser = new function() {
 			var icon, title;
 			if (isOnline) {
 				icon = "images/zotero-new-z-16px.png";
-				title = "Zotero is Online";
-			} else {
+				title = Zotero.getString('browserAction_status_online', ZOTERO_CONFIG.CLIENT_NAME);
+			}
+			else if (isOnline === null) {
+				// Zotero's status is unknown without localhost access, so don't claim it's offline
+				icon = "images/zotero-new-z-16px.png";
+				title = Zotero.getString('appConnector', ZOTERO_CONFIG.CLIENT_NAME);
+			}
+			else {
 				icon = "images/zotero-z-16px-offline.png";
-				title = "Zotero is Offline";
+				title = Zotero.getString('browserAction_status_offline', ZOTERO_CONFIG.CLIENT_NAME);
 			}
 			if (typeof message === 'string') {
 				title = message;
@@ -850,7 +921,9 @@ Zotero.Connector_Browser = new function() {
 		});
 		let withSnapshot = Zotero.Connector.isOnline ? Zotero.Connector.prefs.automaticSnapshots :
 			Zotero.Prefs.get('automaticSnapshots');
-		let title = `Save to Zotero (Web Page ${withSnapshot ? 'with' : 'without'} Snapshot)`;
+		let title = Zotero.getString(withSnapshot
+			? 'browserAction_saveWebpageWithSnapshot'
+			: 'browserAction_saveWebpageWithoutSnapshot', ZOTERO_CONFIG.CLIENT_NAME);
 		browser.action.setTitle({tabId: tab.id, title});
 	}
 
@@ -861,7 +934,7 @@ Zotero.Connector_Browser = new function() {
 		});
 		browser.action.setTitle({
 			tabId: tab.id,
-			title: "Save to Zotero (PDF)"
+			title: Zotero.getString('browserAction_savePDF', ZOTERO_CONFIG.CLIENT_NAME)
 		});
 	}
 
@@ -880,7 +953,7 @@ Zotero.Connector_Browser = new function() {
 		if (translators[0].itemType == "multiple") return;
 		browser.contextMenus.create({
 			id: "zotero-context-menu-translator-save-with-selection-note",
-			title: "Create Zotero Item and Note from Selection",
+			title: Zotero.getString('contextMenu_saveWithNote', ZOTERO_CONFIG.CLIENT_NAME),
 			parentId: parentID,
 			contexts: ['selection']
 		});
@@ -890,13 +963,13 @@ Zotero.Connector_Browser = new function() {
 		var fns = [];
 		fns.push(() => browser.contextMenus.create({
 			id: "zotero-context-menu-webpage-withSnapshot-save",
-			title: "Save to Zotero (Web Page with Snapshot)",
+			title: Zotero.getString('browserAction_saveWebpageWithSnapshot', ZOTERO_CONFIG.CLIENT_NAME),
 			parentId: parentID,
 			contexts: ['page', ...buttonContext]
 		}));
 		fns.push(() => browser.contextMenus.create({
 			id: "zotero-context-menu-webpage-withoutSnapshot-save",
-			title: "Save to Zotero (Web Page without Snapshot)",
+			title: Zotero.getString('browserAction_saveWebpageWithoutSnapshot', ZOTERO_CONFIG.CLIENT_NAME),
 			parentId: parentID,
 			contexts: ['page', ...buttonContext]
 		}));
@@ -912,7 +985,7 @@ Zotero.Connector_Browser = new function() {
 	function _showPDFContextMenuItem(parentID) {
 		browser.contextMenus.create({
 			id: "zotero-context-menu-pdf-save",
-			title: "Save to Zotero (PDF)",
+			title: Zotero.getString('browserAction_savePDF', ZOTERO_CONFIG.CLIENT_NAME),
 			parentId: parentID,
 			contexts: ['all']
 		});
@@ -975,7 +1048,7 @@ Zotero.Connector_Browser = new function() {
 		});
 		browser.contextMenus.create({
 			id: "zotero-context-menu-preferences",
-			title: "Preferences",
+			title: Zotero.getString('general_preferences'),
 			contexts: ['page', ...buttonContext]
 		});
 	}
@@ -989,7 +1062,7 @@ Zotero.Connector_Browser = new function() {
 		});
 		browser.action.setTitle({
 			tabId: tab.id,
-			title: "Zotero Connector"
+			title: Zotero.getString('appConnector', ZOTERO_CONFIG.CLIENT_NAME)
 		});
 		browser.action.enable(tab.id);
 	}
@@ -1039,66 +1112,39 @@ Zotero.Connector_Browser = new function() {
 	}
 	
 	/**
-	 * Check if we have permission to run on all sites.
-	 * Prompts the user if permissions are insufficient.
-	 * @param {Object} tab - The current tab object
-	 * @returns {Promise<boolean>} - Returns false if the action should not proceed 
+	 * Safari doesn't run content scripts in tabs that are already open when the user grants
+	 * site access, so inject them on demand before performing a user action, and give
+	 * translator detection a moment to report before a save mode is chosen
+	 *
+	 * @param tab {Object}
+	 * @returns {Promise<Boolean>} False if the action should be abandoned
 	 */
-	async function _checkPermissions(tab) {
-		// Firefox doesn't have per-site permissions in MV2.
-		if (Zotero.isFirefox) {
-			return true;
+	async function _ensureScriptsInjected(tab) {
+		if (!Zotero.isSafari) return true;
+		await Zotero.Connector_Browser.injectTranslationScripts(tab);
+		let startURL = Zotero.Connector_Browser.getTabInfo(tab.id).url;
+		// The tabInfo object is replaced when the tab navigates, so look it up on each check
+		for (let i = 0; i < 30; i++) {
+			let tabInfo = Zotero.Connector_Browser.getTabInfo(tab.id);
+			// The tab navigated elsewhere, so the action no longer applies to the page it was
+			// invoked on, and the new page gets content scripts from the manifest
+			if (startURL && tabInfo.url && tabInfo.url !== startURL) {
+				return false;
+			}
+			if (tabInfo.translators) {
+				break;
+			}
+			await Zotero.Promise.delay(100);
 		}
-
-		try {
-			const hasPermissions = await browser.permissions.contains({
-				origins: ["https://*/*"]
-			});
-
-			if (hasPermissions) {
-				return true;
-			}
-
-			const messageIntro = Zotero.getString("permissions_siteAccess_message_intro");
-			let promptProps = {
-				title: Zotero.getString("permissions_siteAccess_title"),
-				button1Text: Zotero.getString("permissions_siteAccess_openPreferences"),
-				button2Text: Zotero.getString("general_cancel"),
-				button3Text: Zotero.getString("general_continueAnyway"),
-				message: messageIntro + Zotero.getString("permissions_siteAccess_message")
-			};
-			if (Zotero.isSafari) {
-				promptProps = {
-					title: Zotero.getString("permissions_siteAccess_title"),
-					button1Text: Zotero.getString("general_cancel"),
-					button2Text: "",
-					button3Text: Zotero.getString("general_continueAnyway"),
-					message: messageIntro + Zotero.getString(
-						"permissions_siteAccess_message_safari",
-						Zotero.getString('appConnector', ZOTERO_CONFIG.CLIENT_NAME)
-					)
-				};
-			}
-
-			const result = await Zotero.Messaging.sendMessage('confirm', promptProps, tab);
-
-			if (result) {
-				if (!Zotero.isSafari && result.button === 1) {
-					browser.tabs.create({
-						url: `about:extensions/?id=${browser.runtime.id}`
-					});
-				}
-				return result.button === 3;
-			}
-		} catch (e) {
-			Zotero.debug('Error checking permissions: ' + e.message);
-			return true;
-		}
+		return true;
 	}
-	
+
 	async function _browserAction(tab) {
-		const shouldContinue = await _checkPermissions(tab);
+		const shouldContinue = await Zotero.HostPermissions.checkChromiumActionPermissions(tab);
 		if (!shouldContinue) {
+			return;
+		}
+		if (!await _ensureScriptsInjected(tab)) {
 			return;
 		}
 
@@ -1177,7 +1223,9 @@ Zotero.Connector_Browser = new function() {
 	
 	function _getTranslatorLabel(translator) {
 		var translatorName = translator.label;
-		return "Save to Zotero (" + translatorName + ")";
+		return Zotero.getString('browserAction_saveWithTranslator', [
+			ZOTERO_CONFIG.CLIENT_NAME, translatorName
+		]);
 	}
 	
 	Zotero.Messaging.addMessageListener("selectDone", function(data) {

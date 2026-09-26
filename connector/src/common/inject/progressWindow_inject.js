@@ -68,7 +68,7 @@ if (isTopWindow) {
 	var scrollY;
 	var zoteroFrame;
 	
-	async function sendMessage(name, data = {}) {
+	async function sendMessageToFrame(name, data = {}) {
 		return Zotero.Messaging.sendToZoteroFrames(name, data);
 	}
 
@@ -80,7 +80,7 @@ if (isTopWindow) {
 	// to the iframe once the component is ready
 	function addEvent(name, data) {
 		frameReadyDeferred.promise.then(function() {
-			sendMessage(`progressWindowIframe.${name}`, data);
+			sendMessageToFrame(`progressWindowIframe.${name}`, data);
 		});
 	}
 	
@@ -103,7 +103,7 @@ if (isTopWindow) {
 		}
 		catch (e) {
 			// TODO: Shouldn't this be coupled to the actual save process?
-			changeHeadline("Saving to zotero.org");
+			changeHeadline(Zotero.getString('progressWindow_savingToOnlineLibrary'));
 			return;
 		}
 		
@@ -308,7 +308,9 @@ if (isTopWindow) {
 			updatingSession = true;
 			
 			try {
-				await sendMessage(
+				// Handled by the injected script in the frame that's saving, which may be a
+				// child frame, so broadcast to every frame
+				await Zotero.Messaging.sendMessage(
 					"updateSession",
 					{
 						target: data.target.id,
@@ -316,7 +318,9 @@ if (isTopWindow) {
 						note: data.note.replace(/\n/g, "<br>"), // replace newlines with <br> for note-editor
 						resaveAttachments: !lastSuccessfulTarget.filesEditable && data.target.filesEditable,
 						removeAttachments: lastSuccessfulTarget.filesEditable && !data.target.filesEditable
-					}
+					},
+					null,
+					null // Null frameId - broadcast
 				);
 			}
 			// Collapse popup on error

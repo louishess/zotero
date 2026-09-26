@@ -62,9 +62,6 @@
 [submodule "connector/src/utilities"]
 	path = connector/src/utilities
 	url = https://github.com/zotero/utilities.git
-[submodule "connector/lib/SingleFile-Lite"]
-	path = connector/lib/SingleFile-Lite
-	url = https://github.com/gildas-lormeau/SingleFile-Lite.git
 [submodule "connector/src/zotero-schema"]
 	path = connector/src/zotero-schema
 	url = https://github.com/zotero/zotero-schema.git
