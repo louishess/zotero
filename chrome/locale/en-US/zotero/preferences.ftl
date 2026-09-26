@@ -133,6 +133,22 @@ preferences-sync-reset-heading = Sync Reset
 preferences-sync-fileSyncing-groups =
     .label = Sync attachment files in group libraries using { -app-name } Storage
 preferences-sync-fileSyncing-tos = By using { -app-name } Storage, you agree to become bound by its <label data-l10n-name="terms-link">terms and conditions</label>.
+preferences-automatic-attachment-downloads-heading = Automatic Attachment Downloads
+preferences-automatic-attachment-downloads-description = Choose which attachment types { -app-name } may download automatically. Opening or explicitly downloading a file is always allowed.
+preferences-automatic-attachment-download-type-pdf =
+    .label = PDF (.pdf)
+preferences-automatic-attachment-download-type-docx =
+    .label = Word document (.docx)
+preferences-automatic-attachment-download-type-md =
+    .label = Markdown (.md)
+preferences-automatic-attachment-download-type-xlsx =
+    .label = Excel workbook (.xlsx)
+preferences-automatic-attachment-download-type-mp3 =
+    .label = MP3 audio (.mp3)
+preferences-automatic-attachment-download-type-mp4 =
+    .label = MP4 video (.mp4)
+preferences-automatic-attachment-download-type-webm =
+    .label = WebM video (.webm)
 preferences-account-log-out =
     .label = Log Out…
 

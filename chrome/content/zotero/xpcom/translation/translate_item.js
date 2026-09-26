@@ -151,7 +151,8 @@ Zotero.Translate.ItemSaver.prototype = {
 
 		// TODO: Separate pref?
 		var shouldDownloadOAPDF = this.attachmentMode == Zotero.Translate.ItemSaver.ATTACHMENT_MODE_DOWNLOAD
-			&& Zotero.Prefs.get('downloadAssociatedFiles');
+			&& Zotero.Prefs.get('downloadAssociatedFiles')
+			&& Zotero.AutomaticAttachmentDownloads.isTypeEnabled("pdf");
 		if (shouldDownloadOAPDF) {
 			for (let item of items) {
 				let urlObjects = await this._getOpenAccessPDFURLs(item, attachmentCallback);
@@ -573,6 +574,14 @@ Zotero.Translate.ItemSaver.prototype = {
 				else {
 					if (!Zotero.Prefs.get("downloadAssociatedFiles")) {
 						Zotero.debug("Translate: Not adding attachment: automatic file attachments are disabled");
+						return false;
+					}
+					if (!Zotero.AutomaticAttachmentDownloads.shouldDownload({
+						contentType: attachment.mimeType,
+						filename: attachment.title,
+						url: attachment.url,
+					})) {
+						Zotero.debug("Translate: Not adding attachment: automatic downloads are disabled for this file type");
 						return false;
 					}
 				}
