@@ -48,7 +48,9 @@ const { spawn } = require('node:child_process');
 	try {
 		let response;
 		for (let attempt = 0; attempt < 90; attempt++) {
-			if (child.exitCode !== null) throw new Error(`Package exited before startup: ${child.exitCode}`);
+			if (child.exitCode !== null || child.signalCode !== null) {
+				throw new Error(`Package exited before startup: ${child.exitCode ?? child.signalCode}`);
+			}
 			try {
 				response = await fetch(`http://127.0.0.1:${port}/api/users/0/items`, {
 					headers: { 'Zotero-API-Version': '3' }, signal: AbortSignal.timeout(1000)

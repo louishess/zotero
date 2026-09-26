@@ -80,6 +80,9 @@ version was introduced.
 - Reader-opening UI fixtures wait for startup completion before closing tabs.
   WebDAV UI fixtures wait for the upstream asynchronous credential load before
   clicking Verify. These are readiness checks, not disabled assertions.
+- Local ad-hoc packages clear hardened-runtime flags: their executable has no
+  Team ID for library validation. Both signature verification and disposable
+  startup must pass; a valid signature alone did not establish launchability.
 
 ## Validation boundaries
 
@@ -103,6 +106,9 @@ state, and a sync retry timing assertion. Its result is recorded in
 `final-desktop-all.log` and the external validation summary, alongside isolated
 reruns. Do not describe either full run as fully passing or infer product failure solely from a cascading UI
 test. Conversely, focused passing results do not establish a green full-suite run.
+The final fresh-profile retraction/sync/WebDAV rerun passed 47/47. Item-pane
+isolation passed 103/106, with focus and undo-related failures remaining. These
+results are not a waiver of the full-suite failures.
 
 Package commands do not install anything. Production Desktop smoke tests use a
 new profile/library and randomly assigned local API port, not a personal profile.

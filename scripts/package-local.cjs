@@ -30,7 +30,8 @@ run('./build.sh', ['-p', 'b', '-v', source.build.connectorVersion], path.join(ro
 fs.mkdirSync(output, { recursive: true });
 const app = path.join(output, 'ZoteroMerge.app');
 run('/usr/bin/ditto', [path.join(root, 'app/staging/Zotero.app'), app]);
-run('/usr/bin/codesign', ['--force', '--deep', '--options', 'runtime', '--entitlements',
+// An ad-hoc executable has no Team ID for hardened-runtime library validation.
+run('/usr/bin/codesign', ['--force', '--deep', '--options', '0', '--entitlements',
 	path.join(root, 'app/mac/entitlements.xml'), '--sign', '-', app]);
 run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', app]);
 const connector = path.join(output, 'ZoteroMerge-Connector');
@@ -57,7 +58,7 @@ for (const filename of ['ZoteroMerge-macOS.zip', 'ZoteroMerge-Connector.zip']) {
 }
 const record = { commit: git('rev-parse', 'HEAD'), createdUTC: new Date().toISOString(),
 	components: source.components, dependencies: source.dependencies,
-	build: source.build, checksums: hashes, signing: 'macOS ad-hoc, deep and strict verification passed',
+	build: source.build, checksums: hashes, signing: 'macOS ad-hoc without hardened runtime; deep and strict verification passed',
 	installed: false, reproducibility: 'Compare unpacked source/assets; ZIP timestamps and signatures are not byte-stable' };
 fs.writeFileSync(path.join(output, 'release-manifest.json'), JSON.stringify(record, null, 2) + '\n');
 fs.writeFileSync(path.join(output, 'SHA256SUMS'), Object.entries(hashes).map(([name, hash]) => `${hash}  ${name}\n`).join(''));
