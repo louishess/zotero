@@ -19,10 +19,12 @@ const registered = new Set(git('config', '--file', '.gitmodules', '--get-regexp'
 	.split('\n').map(line => line.slice(line.indexOf(' ') + 1)));
 const gitlinks = git('ls-files', '--stage').split('\n').filter(line => line.startsWith('160000 '));
 assert.equal(registered.size, gitlinks.length, 'Every pinned dependency must be registered at the root');
+assert.equal(Object.keys(manifest.dependencies).length, gitlinks.length, 'Manifest must enumerate every direct dependency');
 for (const line of gitlinks) {
 	const [metadata, relative] = line.split('\t');
 	const pin = metadata.split(' ')[1];
 	assert.ok(registered.has(relative), relative);
+	assert.equal(manifest.dependencies[relative], pin, `Manifest pin for ${relative}`);
 	assert.equal(git('-C', relative, 'rev-parse', 'HEAD'), pin, relative);
 }
 assert.doesNotMatch(fs.readFileSync(path.join(root, '.gitmodules'), 'utf8'), /louishess|file:\/\/|\/Users\//);

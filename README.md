@@ -44,6 +44,19 @@ The custom worker builds locally; official reader/editor bundles may be download
 from Zotero's public build service, with source-build fallback. Never copy a private
 worker cache or depend on an old sibling checkout.
 
+For a committed, clean checkout with dependencies already installed, create signed
+local packages and then smoke-test the production app with a disposable library:
+
+```sh
+node scripts/package-local.cjs ../ZoteroMerge-packages/rc-2026-09-25
+node scripts/smoke-package.cjs ../ZoteroMerge-packages/rc-2026-09-25/ZoteroMerge.app
+```
+
+The output directory must not already exist. The package command includes a
+source/dependency manifest and SHA-256 checksums. Ad-hoc signing is not Apple
+notarization. Archive timestamps/signatures can differ across builds; compare the
+unpacked source/assets when checking reproducibility.
+
 ## Test
 
 ```sh
@@ -51,6 +64,7 @@ node --test scripts/test-worker-source-hash.cjs
 node --test test/tests/*SupplementaryTest.mjs
 CI=1 test/runtests.sh
 npm --prefix document-worker run test:core
+(cd document-worker && CI=1 npm run test:runtime:browser)
 (cd connector && ./build.sh -d && npm test)
 ```
 
