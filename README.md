@@ -50,6 +50,7 @@ local packages and then smoke-test the production app with a disposable library:
 ```sh
 node scripts/package-local.cjs ../ZoteroMerge-packages/rc-2026-09-25
 node scripts/smoke-package.cjs ../ZoteroMerge-packages/rc-2026-09-25/ZoteroMerge.app
+node scripts/smoke-connector.cjs ../ZoteroMerge-packages/rc-2026-09-25/ZoteroMerge-Connector
 ```
 
 The output directory must not already exist. The package command includes a
