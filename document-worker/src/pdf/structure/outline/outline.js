@@ -1,6 +1,7 @@
 import { getBlockPlainText } from '../../../../structured-document-text/src/pdf/index.js';
+import { contentsLocatorMatchesPageLabel } from '../contents.js';
 import { titles as REFERENCE_TITLES } from '../reference/titles.js';
-import { resolveDestination } from '../util.js';
+import { getClosestDistance, resolveDestination } from '../util.js';
 
 const ACKNOWLEDGMENT_TOP_TITLES = [
 	'acknowledgment',
@@ -178,6 +179,7 @@ function buildAllBlocksByPage(blocks) {
 			_fontSize: metrics.fontSize || metrics.firstCharFontSize || 0,
 			_firstCharFontName: metrics.firstCharFontName || '',
 			_firstCharFontSize: metrics.firstCharFontSize || 0,
+			_contentsNavigationHeading: block._contentsNavigationHeading === true,
 		};
 
 		let list = allBlocksByPage.get(pageIndex);
@@ -194,7 +196,7 @@ function extractHeadingItems(blocks) {
 	const headingItems = [];
 	for (let i = 0; i < blocks.length; i++) {
 		const block = blocks[i];
-		if (block.flowClass === 'excluded') continue;
+		if (block.flowClass === 'excluded' || block._contentsNavigationHeading) continue;
 		if (block.type !== 'heading') continue;
 		const metrics = block._metrics || {};
 		const anchorRect = block?.anchor?.pageRects?.[0];
@@ -251,7 +253,7 @@ function truncateToNativeTitle(blockTitle, nativeTitle) {
 	return blockTitle.slice(0, cutPoint).trim();
 }
 
-async function getNativeOutline(pdfDocument) {
+export async function getNativeOutline(pdfDocument) {
 	if (!pdfDocument) return [];
 	let items;
 	try {
@@ -265,13 +267,16 @@ async function getNativeOutline(pdfDocument) {
 		const result = [];
 		for (const item of list) {
 			const newItem = {
-				title: item.title || '',
+				// Native titles can contain stray control characters (e.g. \r)
+				title: (item.title || '').replace(/\s+/gu, ' ').trim(),
 				items: [],
 			};
 			if (item.dest) {
 				const position = await resolveDestination(pdfDocument, item.dest);
 				if (position) {
 					newItem.location = { position };
+				} else {
+					newItem.brokenDest = true;
 				}
 			} else if (item.unsafeUrl) {
 				newItem.url = item.unsafeUrl;
@@ -291,7 +296,7 @@ async function getNativeOutline(pdfDocument) {
 	return outline;
 }
 
-function flattenNativeOutline(items, depth = 0, parent = null, out = [], orderRef = { value: 0 }) {
+export function flattenNativeOutline(items, depth = 0, parent = null, out = [], orderRef = { value: 0 }) {
 	for (const item of items || []) {
 		const orderIndex = orderRef.value++;
 		const pageIndex = item?.location?.position?.pageIndex;
@@ -307,6 +312,7 @@ function flattenNativeOutline(items, depth = 0, parent = null, out = [], orderRe
 			_orderIndex: orderIndex,
 			_location: item.location,
 			_url: item.url,
+			_brokenDest: item.brokenDest === true,
 			_parent: parent,
 			_children: [],
 		};
@@ -371,6 +377,7 @@ function recoverInlineHeadings(allBlocksByPage, confirmedStyles, usedBlockIndice
 	for (const pageBlocks of allBlocksByPage.values()) {
 		for (const block of pageBlocks) {
 			if (usedBlockIndices.has(block._blockIndex)) continue;
+			if (block._contentsNavigationHeading) continue;
 			if (skipTypes.has(block.type)) continue;
 			if (!block.title || block.title.length > 150) continue;
 
@@ -406,6 +413,250 @@ function recoverInlineHeadings(allBlocksByPage, confirmedStyles, usedBlockIndice
 		}
 	}
 
+	return recoveredItems;
+}
+
+function getComparableTitleKey(title) {
+	return normalizeLooseTitle(title).replace(/\s/gu, '');
+}
+
+function getBlockStyles(block) {
+	const upper = getUppercaseRatio(block.title) >= 0.9;
+	const styles = [];
+	for (const [fontName, fontSize] of [
+		[block._fontName, block._fontSize],
+		[block._firstCharFontName, block._firstCharFontSize],
+	]) {
+		const normalizedFontName = normalizeFontName(fontName || '');
+		const sizeBucket = Math.round((fontSize || 0) * 2) / 2;
+		if (normalizedFontName || sizeBucket) {
+			styles.push({
+				key: `${normalizedFontName}|${sizeBucket}|${upper}`,
+				fontName,
+				fontSize,
+			});
+		}
+	}
+	return styles.filter((style, index) => (
+		styles.findIndex(candidate => candidate.key === style.key) === index
+	));
+}
+
+function getRowDestinations(row) {
+	return row.linkDestinations || [];
+}
+
+function selectDestinationMatch(candidates, destination) {
+	if (candidates.length === 1) return candidates[0];
+	if (!destination?.rect || candidates.some(candidate => !candidate._rect)) return null;
+	const ranked = candidates
+		.map(candidate => ({
+			candidate,
+			distance: getClosestDistance(candidate._rect, destination.rect),
+		}))
+		.sort((a, b) => a.distance - b.distance);
+	return ranked.length > 1 && ranked[0].distance === ranked[1].distance
+		? null
+		: ranked[0]?.candidate || null;
+}
+
+function findLinkedTitleMatch(row, candidatesByPage) {
+	const titleKey = row.titleKey || getComparableTitleKey(row.title);
+	if (!titleKey) return null;
+	const matches = [];
+	for (const destination of getRowDestinations(row)) {
+		if (!Number.isInteger(destination.pageIndex)) continue;
+		const candidates = (candidatesByPage.get(destination.pageIndex) || [])
+			.filter(candidate => getComparableTitleKey(candidate.title) === titleKey);
+		const match = selectDestinationMatch(candidates, destination);
+		if (match) matches.push({ match, destination });
+	}
+	const unique = matches.filter(({ match }, index) => (
+		matches.findIndex(candidate => candidate.match._blockIndex === match._blockIndex) === index
+	));
+	return unique.length === 1
+		? { ...unique[0].match, _matchedDestination: unique[0].destination }
+		: null;
+}
+
+function groupItemsByPage(items) {
+	const result = new Map();
+	for (const item of items) {
+		if (!Number.isInteger(item._pageIndex)) continue;
+		if (!result.has(item._pageIndex)) result.set(item._pageIndex, []);
+		result.get(item._pageIndex).push(item);
+	}
+	return result;
+}
+
+function findContentsBlockMatch(row, pageBlocks) {
+	const rowKey = row.titleKey || getComparableTitleKey(row.title);
+	if (!rowKey) return null;
+	const matches = [];
+	for (let start = 0; start < pageBlocks.length; start++) {
+		if (pageBlocks[start].type !== 'heading') continue;
+		let title = '';
+		for (let end = start; end < pageBlocks.length; end++) {
+			const block = pageBlocks[end];
+			if (block.type !== 'heading' && block.type !== 'paragraph') break;
+			title = title ? `${title} ${block.title}` : block.title;
+			const key = getComparableTitleKey(title);
+			if (key === rowKey) {
+				matches.push({ title, block: pageBlocks[start] });
+				break;
+			}
+			if (!key || !rowKey.startsWith(key)) break;
+		}
+	}
+	return matches.length === 1 ? matches[0] : null;
+}
+
+function buildPrintedContentsOutline(allBlocksByPage, navigationRegions, pageLabels) {
+	const items = [];
+	const usedBlockIndices = new Set();
+	for (const region of navigationRegions) {
+		if (region.source !== 'heading-concentration') continue;
+		for (const row of region.rows || []) {
+			if (
+				!Number.isInteger(row.targetPage)
+				|| !contentsLocatorMatchesPageLabel(row.locatorKey, pageLabels?.[row.targetPage])
+			) {
+				continue;
+			}
+			const match = findContentsBlockMatch(
+				row,
+				allBlocksByPage.get(row.targetPage) || [],
+			);
+			if (!match || usedBlockIndices.has(match.block._blockIndex)) continue;
+			usedBlockIndices.add(match.block._blockIndex);
+			items.push({
+				title: match.title,
+				ref: [match.block._blockIndex],
+			});
+		}
+	}
+	return items.sort((a, b) => a.ref[0] - b.ref[0]);
+}
+
+function markAlignedContentsHeadings(headingItems, navigationRegions) {
+	const alignedBlockIndices = new Set();
+	if (!navigationRegions?.length) return alignedBlockIndices;
+	const navigationPages = new Set(navigationRegions.map(region => region.pageIndex));
+	const headingsByTitle = new Map();
+	for (const item of headingItems) {
+		if (navigationPages.has(item._pageIndex)) continue;
+		const key = getComparableTitleKey(item.title);
+		if (!key) continue;
+		if (!headingsByTitle.has(key)) headingsByTitle.set(key, []);
+		headingsByTitle.get(key).push(item);
+	}
+
+	for (const region of navigationRegions) {
+		const matches = [];
+		const usedBlockIndices = new Set();
+		for (const row of region.rows || []) {
+			const candidates = (headingsByTitle.get(row.titleKey || getComparableTitleKey(row.title)) || [])
+				.filter(item => item._pageIndex > region.pageIndex);
+			if (candidates.length !== 1 || usedBlockIndices.has(candidates[0]._blockIndex)) continue;
+			matches.push(candidates[0]);
+			usedBlockIndices.add(candidates[0]._blockIndex);
+		}
+		if (
+			matches.length
+			&& matches.every((item, index) => (
+				index === 0 || matches[index - 1]._blockIndex < item._blockIndex
+			))
+		) {
+			for (const item of matches) {
+				item._contentsAnchor = true;
+				alignedBlockIndices.add(item._blockIndex);
+			}
+		}
+	}
+	return alignedBlockIndices;
+}
+
+// Two independently recognized linked headings establish that a navigation
+// region follows the body outline. Only exact linked block matches that
+// preserve that sequence and reuse an anchored heading style are recovered.
+function recoverContentsHeadings(
+	allBlocksByPage,
+	headingItems,
+	usedBlockIndices,
+	navigationRegions,
+) {
+	if (!navigationRegions?.length) return [];
+	const navigationPages = new Set(navigationRegions.map(region => region.pageIndex));
+	const headingsByPage = groupItemsByPage(headingItems.filter(item => (
+		!navigationPages.has(item._pageIndex)
+	)));
+	const candidatesByPage = new Map();
+	for (const pageBlocks of allBlocksByPage.values()) {
+		for (const block of pageBlocks) {
+			if (
+				(block.type !== 'paragraph' && block.type !== 'heading')
+				|| usedBlockIndices.has(block._blockIndex)
+				|| block._contentsNavigationHeading
+				|| navigationPages.has(block._pageIndex)
+			) {
+				continue;
+			}
+			if (!candidatesByPage.has(block._pageIndex)) candidatesByPage.set(block._pageIndex, []);
+			candidatesByPage.get(block._pageIndex).push(block);
+		}
+	}
+
+	const recoveredItems = [];
+	for (const region of navigationRegions) {
+		const rows = (region.rows || []).map((row, rowIndex) => ({
+			row,
+			rowIndex,
+			anchor: findLinkedTitleMatch(row, headingsByPage),
+		}));
+		const anchors = rows.filter(item => item.anchor);
+		const orderedAnchors = region.source === 'destination-link'
+			&& anchors.length >= 2 && anchors.every((item, index) => (
+			index === 0 || anchors[index - 1].anchor._blockIndex < item.anchor._blockIndex
+		));
+		const anchorStyles = new Set(anchors.map(item => item.anchor._styleKey).filter(Boolean));
+		if (orderedAnchors) for (const rowMatch of rows) {
+			if (rowMatch.anchor) continue;
+			const candidate = findLinkedTitleMatch(rowMatch.row, candidatesByPage);
+			if (!candidate || usedBlockIndices.has(candidate._blockIndex)) continue;
+			const destinationRect = candidate._matchedDestination?.rect;
+			if (destinationRect && candidate._rect) {
+				const candidateDistance = getClosestDistance(candidate._rect, destinationRect);
+				const closerHeading = (headingsByPage.get(candidate._pageIndex) || []).some(heading => (
+					heading._rect
+					&& getClosestDistance(heading._rect, destinationRect) <= candidateDistance
+				));
+				if (closerHeading) continue;
+			}
+			const matchingStyle = getBlockStyles(candidate)
+				.find(style => anchorStyles.has(style.key));
+			if (!matchingStyle) continue;
+			const preservesOrder = anchors.every(anchor => (
+				anchor.rowIndex < rowMatch.rowIndex
+					? anchor.anchor._blockIndex < candidate._blockIndex
+					: anchor.anchor._blockIndex > candidate._blockIndex
+			));
+			if (!preservesOrder) continue;
+			const outlineItem = {
+				title: candidate.title,
+				ref: [candidate._blockIndex],
+				_blockIndex: candidate._blockIndex,
+				_pageIndex: candidate._pageIndex,
+				_rect: candidate._rect,
+				_fontName: matchingStyle.fontName || '',
+				_fontSize: matchingStyle.fontSize || 0,
+				_orderIndex: candidate._blockIndex,
+				_recovered: true,
+			};
+			computeItemStyle(outlineItem);
+			recoveredItems.push(outlineItem);
+			usedBlockIndices.add(candidate._blockIndex);
+		}
+	}
 	return recoveredItems;
 }
 
@@ -656,7 +907,7 @@ function unwrapUniqueStyleParents(items, styleCounts) {
 
 		const styleKey = item._styleKey;
 		const isUnique = styleKey && styleCounts.get(styleKey) === 1;
-		if (children.length && isUnique && !item._forceTop) {
+		if (children.length && isUnique && !item._forceTop && !item._contentsAnchor) {
 			result.push(...children);
 		} else {
 			result.push(item);
@@ -1013,48 +1264,19 @@ function filterOutlineItem(item) {
 	return result;
 }
 
-export async function getOutline(blocks, titleRef, pdfDocument) {
-	// Phase 1: Build allBlocksByPage
-	const allBlocksByPage = buildAllBlocksByPage(blocks);
-
-	// Phase 2: Native outline -> match to blocks
-	const nativeOutline = await getNativeOutline(pdfDocument);
-	const nativeNodes = flattenNativeOutline(nativeOutline);
-	const nativeMatches = matchNativeToBlocks(nativeNodes, allBlocksByPage);
-	const nativeMatchedItems = buildNativeMatchedItems(nativeMatches);
-
-	// Phase 3: Extract heading items
-	const headingItems = extractHeadingItems(blocks);
-	if (!headingItems.length) return [];
-
-	// Phase 4: Build combined list
-	const combined = headingItems.slice();
-	const usedBlockIndices = new Set(combined.map(item => item._blockIndex));
-
-	// Phase 4b: Recover inline headings
-	const confirmedStyles = new Set(combined.map(item => item._styleKey).filter(Boolean));
-	const recoveredItems = recoverInlineHeadings(allBlocksByPage, confirmedStyles, usedBlockIndices);
-	combined.push(...recoveredItems);
-
-	// Sort by SDT block order; visual y-order breaks multi-column outlines.
+function buildGeneratedOutline(items, titleRef, nativeMatchedItems, nativeMatches) {
+	const combined = items.map(item => ({ ...item, children: [] }));
 	for (const item of combined) {
 		item._orderKey = getNodeOrderKey(item);
 	}
 	combined.sort((a, b) => compareOrderKey(a._orderKey, b._orderKey));
 
-	// Phase 5: Compute style stats + _forceTop
 	const styleStats = computeStyleStats(combined);
 	markForceTop(combined, titleRef);
-
-	// Phase 6: Build style-depth map
 	const styleDepthMap = buildStyleDepthMap(nativeMatchedItems, combined);
 	const numDistinctStyles = styleStats.size || 1;
 	const maxDepth = Math.min(6, Math.max(1, numDistinctStyles));
-
-	// Phase 7: Stack-based depth assignment + tree building
 	const outline = buildOutline(combined, styleDepthMap, maxDepth);
-
-	// Phase 8: Post-processing
 	const styleCounts = new Map();
 	for (const [key, stat] of styleStats) {
 		styleCounts.set(key, stat.count);
@@ -1067,4 +1289,589 @@ export async function getOutline(blocks, titleRef, pdfDocument) {
 	const terminalLifted = liftTerminalChildren(markerRepaired);
 	normalizeLevels(terminalLifted, 1);
 	return terminalLifted.map(filterOutlineItem).filter(Boolean);
+}
+
+function getRefKey(item) {
+	return Array.isArray(item?.ref) ? item.ref.join('.') : null;
+}
+
+function cloneOutlineItems(items, index) {
+	return (items || []).map(item => {
+		const children = cloneOutlineItems(item.children, index);
+		const clone = {
+			title: item.title,
+			...(Array.isArray(item.ref) && { ref: item.ref.slice() }),
+			...(item.target && { target: { ...item.target } }),
+			...(item.source && { source: item.source }),
+			...(children.length && { children }),
+		};
+		if (Number.isFinite(item._flowIndex)) {
+			clone._flowIndex = item._flowIndex;
+		}
+		const key = getRefKey(clone);
+		if (key) index.set(key, clone);
+		return clone;
+	});
+}
+
+// Order key of an outline item in top-level block space. Items without any
+// position (dest-less containers, URL entries) return null and inherit the
+// preceding sibling's key, so insertions can never split them from it.
+function getOutlineInsertKey(item) {
+	if (Array.isArray(item.ref) && Number.isInteger(item.ref[0])) {
+		return item.ref[0];
+	}
+	if (Number.isFinite(item._flowIndex)) {
+		return item._flowIndex;
+	}
+	return null;
+}
+
+function insertOutlineItem(items, item) {
+	const blockIndex = item.ref?.[0] ?? Number.POSITIVE_INFINITY;
+	let insertIndex = items.length;
+	let lastKey = Number.NEGATIVE_INFINITY;
+	for (let i = 0; i < items.length; i++) {
+		const key = getOutlineInsertKey(items[i]);
+		if (key !== null) {
+			lastKey = key;
+		}
+		if (lastKey > blockIndex) {
+			insertIndex = i;
+			break;
+		}
+	}
+	items.splice(insertIndex, 0, item);
+}
+
+function mergeOutlineAdditions(baseline, enriched, allowedBlockIndices) {
+	const index = new Map();
+	const result = cloneOutlineItems(baseline, index);
+	function visit(items, ancestors = []) {
+		for (const item of items || []) {
+			const key = getRefKey(item);
+			let target = key ? index.get(key) : null;
+			if (key && !target && allowedBlockIndices.has(item.ref?.[0])) {
+				target = {
+					title: item.title,
+					ref: item.ref.slice(),
+					...(item.target && { target: { ...item.target } }),
+				};
+				const parent = ancestors
+					.slice()
+					.reverse()
+					.map(ancestor => index.get(ancestor))
+					.find(Boolean);
+				const siblings = parent
+					? (parent.children ||= [])
+					: result;
+				insertOutlineItem(siblings, target);
+				index.set(key, target);
+			}
+			visit(item.children, key ? [...ancestors, key] : ancestors);
+		}
+	}
+	visit(enriched);
+	return result;
+}
+
+// Types that a page can place out of reading order (floats), so they must not
+// take part in mapping a destination point to a position in block order.
+const OUT_OF_FLOW_BLOCK_TYPES = new Set(['note', 'caption', 'table', 'image', 'math']);
+
+// Maximum point-to-block distance for a geometric-only snap (rung 3).
+const OUTLINE_GEOMETRIC_SNAP_DISTANCE = 24;
+
+// Minimum edit-distance similarity for transferring a detected heading's
+// block to a native entry (rung 2). Tolerates OCR-garbled text.
+const OUTLINE_TITLE_SIMILARITY = 0.75;
+
+// Containment ratios (shorter key length / longer key length) for the text
+// match rung: lenient against heading blocks, strict against other blocks so
+// a short title cannot match inside an ordinary paragraph.
+const HEADING_TITLE_CONTAINMENT = 1 / 3;
+const BLOCK_TITLE_CONTAINMENT = 0.8;
+
+function titleKeysMatch(keyA, keyB, minRatio) {
+	if (!keyA || !keyB) return false;
+	if (keyA === keyB) return true;
+	const shorter = keyA.length <= keyB.length ? keyA : keyB;
+	const longer = keyA.length <= keyB.length ? keyB : keyA;
+	if (!longer.includes(shorter)) return false;
+	return shorter.length / longer.length >= minRatio;
+}
+
+function titleKeySimilarity(keyA, keyB) {
+	if (!keyA || !keyB) return 0;
+	if (keyA === keyB) return 1;
+	const maxLength = Math.max(keyA.length, keyB.length);
+	if (maxLength > 200) return 0;
+	let previous = new Array(keyB.length + 1);
+	for (let j = 0; j <= keyB.length; j++) previous[j] = j;
+	for (let i = 1; i <= keyA.length; i++) {
+		const current = [i];
+		for (let j = 1; j <= keyB.length; j++) {
+			current[j] = Math.min(
+				previous[j] + 1,
+				current[j - 1] + 1,
+				previous[j - 1] + (keyA[i - 1] === keyB[j - 1] ? 0 : 1),
+			);
+		}
+		previous = current;
+	}
+	return 1 - previous[keyB.length] / maxLength;
+}
+
+function buildFlowData(allBlocksByPage, blockCount) {
+	const flowBlocksByPage = new Map();
+	const pageStartEntries = [];
+	for (const [pageIndex, pageBlocks] of allBlocksByPage) {
+		let minIndex = Number.POSITIVE_INFINITY;
+		const flowBlocks = [];
+		for (const block of pageBlocks) {
+			minIndex = Math.min(minIndex, block._blockIndex);
+			if (OUT_OF_FLOW_BLOCK_TYPES.has(block.type)) continue;
+			if (!block._rect) continue;
+			flowBlocks.push(block);
+		}
+		flowBlocks.sort((a, b) => a._blockIndex - b._blockIndex);
+		flowBlocksByPage.set(pageIndex, flowBlocks);
+		if (Number.isFinite(minIndex)) {
+			pageStartEntries.push([pageIndex, minIndex]);
+		}
+	}
+	pageStartEntries.sort((a, b) => a[0] - b[0]);
+	function getPageStartIndex(pageIndex) {
+		const entry = pageStartEntries.find(([page]) => page >= pageIndex);
+		return entry ? entry[1] : blockCount;
+	}
+	return { flowBlocksByPage, getPageStartIndex };
+}
+
+// Map a destination point to a fractional position in top-level block order.
+// A point inside a block maps to the block itself; anything else maps just
+// before the geometrically nearest in-flow block on the page.
+function computeFlowPosition(pageIndex, pointRect, flowData) {
+	const flowBlocks = flowData.flowBlocksByPage.get(pageIndex) || [];
+	let nearestBlock = null;
+	let nearestDistance = Number.POSITIVE_INFINITY;
+	if (pointRect) {
+		for (const block of flowBlocks) {
+			const distance = getClosestDistance(pointRect, block._rect);
+			if (distance < nearestDistance) {
+				nearestDistance = distance;
+				nearestBlock = block;
+			}
+		}
+	}
+	if (!nearestBlock) {
+		return {
+			flowIndex: flowData.getPageStartIndex(pageIndex) - 0.5,
+			nearestBlock: null,
+			nearestDistance: Number.POSITIVE_INFINITY,
+		};
+	}
+	return {
+		flowIndex: nearestDistance === 0
+			? nearestBlock._blockIndex
+			: nearestBlock._blockIndex - 0.5,
+		nearestBlock,
+		nearestDistance,
+	};
+}
+
+// An authored outline is used as the skeleton only when it provides real,
+// working structure. All criteria are structural, so they hold for any
+// language and script.
+function isUsableNativeOutline(nativeNodes, pageCount) {
+	const positionedPages = [];
+	let brokenCount = 0;
+	for (const node of nativeNodes) {
+		if (!node.title) continue;
+		if (Number.isFinite(node._pageIndex)) {
+			positionedPages.push(node._pageIndex);
+		} else if (node._brokenDest) {
+			brokenCount++;
+		}
+	}
+	if (positionedPages.length < 2) return false;
+	if (positionedPages.length / (positionedPages.length + brokenCount) < 0.5) return false;
+	if (pageCount >= 10) {
+		const span = Math.max(...positionedPages) - Math.min(...positionedPages) + 1;
+		if (span / pageCount < 0.1) return false;
+	}
+	return true;
+}
+
+// In-flow blocks from a native entry's flow position to the end of the next
+// page, in flow order. The window starts one block early: a destination that
+// lands between two blocks is ambiguous by one position in either direction.
+// The window is not bounded by the next native entry because destination
+// points can legitimately land one block before their heading. Exact claims
+// are reserved globally before greedy snapping so weaker fallbacks cannot
+// steal those matches.
+function collectSnapWindowBlocks(node, flowData, usedBlockIndexes) {
+	const result = [];
+	for (const pageIndex of [node._pageIndex, node._pageIndex + 1]) {
+		for (const block of flowData.flowBlocksByPage.get(pageIndex) || []) {
+			if (block._blockIndex < node._flowIndex - 1) continue;
+			if (block._contentsNavigationHeading) continue;
+			if (usedBlockIndexes.has(block._blockIndex)) continue;
+			result.push(block);
+		}
+	}
+	return result;
+}
+
+function getExactClaimOwners(nativeNodes, flowData) {
+	const owners = new Map();
+	for (const node of nativeNodes) {
+		const titleKey = getComparableTitleKey(node.title);
+		if (!titleKey) continue;
+		for (const block of collectSnapWindowBlocks(node, flowData, new Set())) {
+			if (getComparableTitleKey(block.title) !== titleKey) continue;
+			const distance = Math.abs(block._blockIndex - node._flowIndex);
+			const current = owners.get(block._blockIndex);
+			if (!current || distance < current.distance) {
+				owners.set(block._blockIndex, { node, distance });
+			}
+		}
+	}
+	return new Map([...owners].map(([blockIndex, claim]) => [blockIndex, claim.node]));
+}
+
+// Anchor native entries to blocks, most reliable evidence first:
+// 1. title text found in a window block (exact matches before containment),
+// 2. transfer from the first detected heading in the window (edit-distance
+//    tolerant, so OCR-garbled headings still anchor),
+// 3. a heading block directly at the destination point,
+// 4. otherwise the entry keeps only its destination as a target.
+function snapNativeNodes(nativeNodes, flowData) {
+	const positioned = [];
+	for (const node of nativeNodes) {
+		if (!Number.isFinite(node._pageIndex)) continue;
+		const flow = computeFlowPosition(node._pageIndex, node._rect, flowData);
+		node._flowIndex = flow.flowIndex;
+		node._nearestBlock = flow.nearestBlock;
+		node._nearestDistance = flow.nearestDistance;
+		positioned.push(node);
+	}
+	const sortedFlowIndexes = positioned.map(node => node._flowIndex).sort((a, b) => a - b);
+	const exactClaimOwners = getExactClaimOwners(positioned, flowData);
+	const usedBlockIndexes = new Set();
+	for (const node of positioned) {
+		const titleKey = getComparableTitleKey(node.title);
+		const canClaim = block => (
+			!exactClaimOwners.has(block._blockIndex)
+				|| exactClaimOwners.get(block._blockIndex) === node
+		);
+		const windowBlocks = collectSnapWindowBlocks(node, flowData, usedBlockIndexes)
+			.filter(canClaim);
+		let exactHeadingMatch = null;
+		let exactBlockMatch = null;
+		let headingMatch = null;
+		let blockMatch = null;
+		if (titleKey) {
+			for (const block of windowBlocks) {
+				const blockKey = getComparableTitleKey(block.title);
+				const exact = titleKey === blockKey;
+				if (block.type === 'heading') {
+					if (exact) {
+						exactHeadingMatch = block;
+						break;
+					}
+					if (!headingMatch && titleKeysMatch(titleKey, blockKey, HEADING_TITLE_CONTAINMENT)) {
+						headingMatch = block;
+					}
+				} else if (exact) {
+					exactBlockMatch ||= block;
+				} else if (!blockMatch && titleKeysMatch(titleKey, blockKey, BLOCK_TITLE_CONTAINMENT)) {
+					blockMatch = block;
+				}
+			}
+		}
+		let snapped = exactHeadingMatch || exactBlockMatch || headingMatch || blockMatch;
+		if (!snapped && titleKey) {
+			// Transfer considers only the first heading at/after the
+			// destination within the entry's own gap: fuzzy matching must not
+			// claim a heading a following entry has a stronger claim to
+			// (titles differing only by a numeral are edit-distance-similar)
+			const transferBound = sortedFlowIndexes.find(flowIndex => flowIndex > node._flowIndex)
+				?? Number.POSITIVE_INFINITY;
+			const firstHeading = windowBlocks.find(block => (
+				block._blockIndex >= node._flowIndex
+				&& block._blockIndex < transferBound
+				&& block.type === 'heading'
+			));
+			if (firstHeading
+					&& titleKeySimilarity(titleKey, getComparableTitleKey(firstHeading.title)) >= OUTLINE_TITLE_SIMILARITY) {
+				snapped = firstHeading;
+			}
+		}
+		if (!snapped
+				&& node._nearestBlock
+				&& canClaim(node._nearestBlock)
+				&& node._nearestBlock.type === 'heading'
+				&& !node._nearestBlock._contentsNavigationHeading
+				&& !usedBlockIndexes.has(node._nearestBlock._blockIndex)
+				&& node._nearestDistance <= OUTLINE_GEOMETRIC_SNAP_DISTANCE) {
+			snapped = node._nearestBlock;
+		}
+		if (snapped) {
+			node._snapBlock = snapped;
+			usedBlockIndexes.add(snapped._blockIndex);
+		}
+	}
+	return usedBlockIndexes;
+}
+
+// Project the native tree verbatim: titles, order and nesting are preserved,
+// anchored entries get a ref, the rest keep their destination or URL.
+function projectNativeSkeleton(nodes) {
+	const items = [];
+	for (const node of nodes) {
+		const children = projectNativeSkeleton(node._children);
+		if (!node.title) {
+			items.push(...children);
+			continue;
+		}
+		const item = { title: node.title || '', source: 'native' };
+		if (node._snapBlock) {
+			item.ref = [node._snapBlock._blockIndex];
+		} else if (Number.isFinite(node._pageIndex)) {
+			const position = { pageIndex: node._pageIndex };
+			if (Array.isArray(node._rect)) {
+				position.rect = node._rect;
+			}
+			item.target = { position };
+		} else if (node._url) {
+			item.target = { url: node._url };
+		}
+		if (Number.isFinite(node._flowIndex)) {
+			item._flowIndex = node._flowIndex;
+		}
+		if (children.length) {
+			item.children = children;
+		}
+		items.push(item);
+	}
+	return items;
+}
+
+function stripOutlineWorkingProps(items) {
+	for (const item of items || []) {
+		delete item._flowIndex;
+		stripOutlineWorkingProps(item.children);
+	}
+	return items;
+}
+
+function getBlockStyleKey(block) {
+	return computeItemStyle({
+		title: block.title,
+		_fontName: block._fontName,
+		_fontSize: block._fontSize,
+	})._styleKey;
+}
+
+// Enrichment entries live in the gap between the native entries around them:
+// an inserted entry must not leap over a native entry to reach its parent
+// (e.g. a "2.1 ..." heading adopted by an unrelated "2. ..." entry from an
+// earlier chapter). The exception is a top-level insert styled like the
+// author's own top-level headings, such as an appendix missing from the
+// authored outline.
+function enforceGapLineage(items, enrichStyleKeys, rootNativeStyleKeys) {
+	const nodes = flattenOutlineNodes(items);
+	const nativeKeyed = [];
+	for (const node of nodes) {
+		if (node.source !== 'native') continue;
+		const key = getOutlineInsertKey(node);
+		if (key !== null) {
+			nativeKeyed.push({ node, key });
+		}
+	}
+	nativeKeyed.sort((a, b) => a.key - b.key);
+	const additions = nodes
+		.filter(node => !node.source && Array.isArray(node.ref))
+		.sort((a, b) => a.ref[0] - b.ref[0]);
+	for (const item of additions) {
+		const blockIndex = item.ref[0];
+		let gapOwner = null;
+		let gapOwnerKey = null;
+		for (const entry of nativeKeyed) {
+			if (entry.key > blockIndex) break;
+			gapOwner = entry.node;
+			gapOwnerKey = entry.key;
+		}
+		if (!gapOwner || gapOwner === item._parentItem || isAncestorOf(item, gapOwner)) {
+			continue;
+		}
+		const parent = item._parentItem || null;
+		const parentKey = parent ? getOutlineInsertKey(parent) : Number.NEGATIVE_INFINITY;
+		if (parentKey !== null && parentKey >= gapOwnerKey) {
+			continue;
+		}
+		if (!parent && rootNativeStyleKeys.has(enrichStyleKeys.get(blockIndex))) {
+			continue;
+		}
+		removeFromCurrentParent(items, item);
+		gapOwner.children = Array.isArray(gapOwner.children) ? gapOwner.children : [];
+		insertOutlineItem(gapOwner.children, item);
+		item._parentItem = gapOwner;
+	}
+	clearParentLinks(items);
+	return items;
+}
+
+// Authored entries that point to a URL stay functional even when the native
+// tree is not used as the skeleton: they make no position claim, so they are
+// appended after the detected outline in declared order.
+function appendNativeUrlItems(outline, nativeNodes) {
+	const urlItems = [];
+	for (const node of nativeNodes) {
+		if (!node._url || !node.title) continue;
+		urlItems.push({
+			title: node.title,
+			target: { url: node._url },
+			source: 'native',
+		});
+	}
+	return urlItems.length ? [...outline, ...urlItems] : outline;
+}
+
+function buildNativeFirstOutline(nativeNodes, blocks, allBlocksByPage, headingItems, titleRef) {
+	const flowData = buildFlowData(allBlocksByPage, blocks.length);
+	const snappedBlockIndexes = snapNativeNodes(nativeNodes, flowData);
+	const baseline = projectNativeSkeleton(nativeNodes.filter(node => !node._parent));
+
+	// A hierarchical authored outline speaks for itself: the author already
+	// chose its granularity, so detection has nothing to add below it. Only
+	// a flat authored outline (a bare chapter or section list) is enriched.
+	if (nativeNodes.some(node => node._parent)) {
+		return stripOutlineWorkingProps(baseline);
+	}
+
+	const enrichItems = headingItems.filter(item => !snappedBlockIndexes.has(item._blockIndex));
+	const usedBlockIndices = new Set([
+		...headingItems.map(item => item._blockIndex),
+		...snappedBlockIndexes,
+	]);
+	const confirmedStyles = new Set(headingItems.map(item => item._styleKey).filter(Boolean));
+	enrichItems.push(...recoverInlineHeadings(allBlocksByPage, confirmedStyles, usedBlockIndices));
+	if (!enrichItems.length) {
+		return stripOutlineWorkingProps(baseline);
+	}
+
+	const rootNativeStyleKeys = new Set();
+	for (const node of nativeNodes) {
+		if (node._snapBlock && !node._parent) {
+			rootNativeStyleKeys.add(getBlockStyleKey(node._snapBlock));
+		}
+	}
+
+	const nativeMatches = [];
+	for (const node of nativeNodes) {
+		if (node._snapBlock) {
+			nativeMatches.push({ native: node, block: node._snapBlock });
+		}
+	}
+	const nativeMatchedItems = buildNativeMatchedItems(nativeMatches);
+	const enriched = buildGeneratedOutline(
+		[...enrichItems, ...nativeMatchedItems],
+		titleRef,
+		nativeMatchedItems,
+		nativeMatches,
+	);
+	const merged = mergeOutlineAdditions(
+		baseline,
+		enriched,
+		new Set(enrichItems.map(item => item._blockIndex)),
+	);
+	const enrichStyleKeys = new Map(enrichItems.map(item => [item._blockIndex, item._styleKey]));
+	enforceGapLineage(merged, enrichStyleKeys, rootNativeStyleKeys);
+	return stripOutlineWorkingProps(merged);
+}
+
+export async function getOutline(blocks, titleRef, pdfDocument, nativeOutline = null, options = {}) {
+	// Phase 1: Build allBlocksByPage
+	const allBlocksByPage = buildAllBlocksByPage(blocks);
+
+	// Phase 2: Native outline -> match to blocks
+	nativeOutline ||= await getNativeOutline(pdfDocument);
+	const nativeNodes = flattenNativeOutline(nativeOutline);
+
+	// Phase 3: Extract heading items
+	const headingItems = extractHeadingItems(blocks);
+
+	// A usable authored outline becomes the skeleton verbatim and detection
+	// only fills the gaps between its entries
+	const pageCount = Array.isArray(options.pageLabels) ? options.pageLabels.length : 0;
+	if (isUsableNativeOutline(nativeNodes, pageCount)) {
+		return buildNativeFirstOutline(nativeNodes, blocks, allBlocksByPage, headingItems, titleRef);
+	}
+
+	const nativeMatches = matchNativeToBlocks(nativeNodes, allBlocksByPage);
+	const nativeMatchedItems = buildNativeMatchedItems(nativeMatches);
+
+	if (!headingItems.length) return appendNativeUrlItems([], nativeNodes);
+
+	// Phase 4: Build combined list
+	const combined = headingItems.slice();
+	const usedBlockIndices = new Set(combined.map(item => item._blockIndex));
+	const navigationRegions = options.navigationRegions || [];
+	if (
+		!nativeMatches.length
+		&& navigationRegions.some(region => region.source === 'heading-concentration')
+	) {
+		return appendNativeUrlItems(buildPrintedContentsOutline(
+			allBlocksByPage,
+			navigationRegions,
+			options.pageLabels,
+		), nativeNodes);
+	}
+
+	// Phase 4b: Recover inline headings
+	const confirmedStyles = new Set(combined.map(item => item._styleKey).filter(Boolean));
+	const recoveredItems = recoverInlineHeadings(allBlocksByPage, confirmedStyles, usedBlockIndices);
+	combined.push(...recoveredItems);
+	if (!navigationRegions.length) {
+		return appendNativeUrlItems(
+			buildGeneratedOutline(combined, titleRef, nativeMatchedItems, nativeMatches),
+			nativeNodes,
+		);
+	}
+	const baselineItems = combined.map(item => ({ ...item }));
+	const baselineNativeMatchedItems = nativeMatchedItems.filter(item => (
+		!blocks[item._blockIndex]?._contentsNavigationHeading
+	));
+	const baselineNativeMatches = nativeMatches.filter(match => (
+		!blocks[match.block._blockIndex]?._contentsNavigationHeading
+	));
+	const enrichmentBlockIndices = markAlignedContentsHeadings(
+		headingItems,
+		navigationRegions,
+	);
+	const contentsRecoveryItems = recoverContentsHeadings(
+		allBlocksByPage,
+		headingItems,
+		usedBlockIndices,
+		navigationRegions,
+	);
+	combined.push(...contentsRecoveryItems);
+	for (const item of contentsRecoveryItems) {
+		enrichmentBlockIndices.add(item._blockIndex);
+	}
+
+	const baseline = buildGeneratedOutline(
+		baselineItems,
+		titleRef,
+		baselineNativeMatchedItems,
+		baselineNativeMatches,
+	);
+	if (!enrichmentBlockIndices.size) return appendNativeUrlItems(baseline, nativeNodes);
+	const enriched = buildGeneratedOutline(combined, titleRef, nativeMatchedItems, nativeMatches);
+	return appendNativeUrlItems(
+		mergeOutlineAdditions(baseline, enriched, enrichmentBlockIndices),
+		nativeNodes,
+	);
 }

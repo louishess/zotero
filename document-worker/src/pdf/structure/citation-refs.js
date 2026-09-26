@@ -10,6 +10,7 @@ import { extractMatchableSourceIdentifiers } from './reference/source-identifier
 const NUMBER_DELIMITED_RE = /([\[(])\s*([0-9][0-9,\s\-–]*)\s*([\])])/g;
 const WORD_RE = /[\p{L}\p{M}\p{N}]+(?:['’-][\p{L}\p{M}\p{N}]+)*/gu;
 const IDENTITY_GROUP_MAX_CHARS = 180;
+const AUTHOR_YEAR_MENTION_MAX_CHARS = 64;
 const IDENTITY_GROUP_RE = new RegExp(`([\\[(])([^()[\\]\\n]{1,${IDENTITY_GROUP_MAX_CHARS}})([\\])])`, 'g');
 const IDENTITY_CONTEXT_WORDS = new Set(['cf', 'compare', 'eg', 'fig', 'figure', 'see', 'table']);
 const IDENTITY_CONNECTORS = new Set([
@@ -134,6 +135,75 @@ function previousNonSpace(text, index) {
 	return null;
 }
 
+function nonSpaceIndex(text, index, step) {
+	for (let i = index + step; i >= 0 && i < text.length; i += step) {
+		if (!/\s/.test(text[i])) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+function rectCenter(rect, axis) {
+	return (rect[axis] + rect[axis + 2]) / 2;
+}
+
+function visuallyAttachedPrecedingDigit(bt, start) {
+	const adjacentIndex = nonSpaceIndex(bt.text, start, -1);
+	if (adjacentIndex < 0) {
+		return false;
+	}
+	const referenceIndex = nonSpaceIndex(bt.text, adjacentIndex, -1);
+	if (referenceIndex < 0) {
+		return false;
+	}
+
+	const runRect = bt.rects[start];
+	const adjacentRect = bt.rects[adjacentIndex];
+	const referenceRect = bt.rects[referenceIndex];
+	const pageIndex = bt.pageIndexes[start];
+	if (
+		!runRect || !adjacentRect || !referenceRect
+		|| pageIndex === null
+		|| bt.pageIndexes[adjacentIndex] !== pageIndex
+		|| bt.pageIndexes[referenceIndex] !== pageIndex
+	) {
+		return false;
+	}
+
+	const dx = rectCenter(adjacentRect, 0) - rectCenter(referenceRect, 0);
+	const dy = rectCenter(adjacentRect, 1) - rectCenter(referenceRect, 1);
+	if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) === Math.abs(dy)) {
+		return false;
+	}
+	const axis = Math.abs(dx) > Math.abs(dy) ? 0 : 1;
+	const direction = axis === 0 ? Math.sign(dx) : Math.sign(dy);
+	if (!direction) {
+		return false;
+	}
+
+	const crossAxis = axis === 0 ? 1 : 0;
+	const crossGap = Math.max(
+		runRect[crossAxis] - adjacentRect[crossAxis + 2],
+		adjacentRect[crossAxis] - runRect[crossAxis + 2],
+		0
+	);
+	const maximumCrossGap = Math.min(
+		runRect[crossAxis + 2] - runRect[crossAxis],
+		adjacentRect[crossAxis + 2] - adjacentRect[crossAxis]
+	);
+	if (!Number.isFinite(crossGap) || !Number.isFinite(maximumCrossGap) || crossGap > maximumCrossGap) {
+		return false;
+	}
+
+	const beforeRect = adjacentRect;
+	const afterRect = runRect;
+	const gap = direction > 0
+		? afterRect[axis] - beforeRect[axis + 2]
+		: beforeRect[axis] - afterRect[axis + 2];
+	return Number.isFinite(gap) && gap <= 0;
+}
+
 function nextNonSpace(text, index) {
 	for (let i = index + 1; i < text.length; i++) {
 		if (!/\s/.test(text[i])) {
@@ -160,7 +230,8 @@ function hasStructuralNumericMarker(text, start) {
 	return previousWord ? STRUCTURAL_NUMERIC_CONTEXT_WORDS.has(previousWord) : false;
 }
 
-function getNumericMentionContext(text, start, end, kind, baseStrength) {
+function getNumericMentionContext(bt, start, end, kind, baseStrength) {
+	const { text } = bt;
 	if (baseStrength !== 'strong') {
 		return NUMERIC_CONTEXT.WEAK;
 	}
@@ -172,6 +243,23 @@ function getNumericMentionContext(text, start, end, kind, baseStrength) {
 	}
 	if (start === 0 || isDenseNumericMetadataLine(text)) {
 		return NUMERIC_CONTEXT.WEAK;
+	}
+	const immediatePrev = text[start - 1];
+	const immediateNext = text[end + 1];
+	if (/\p{L}/u.test(immediateNext || '')) {
+		return NUMERIC_CONTEXT.WEAK;
+	}
+	if (/\d/.test(immediatePrev || '')) {
+		return visuallyAttachedPrecedingDigit(bt, start)
+			? NUMERIC_CONTEXT.BLOCKED
+			: NUMERIC_CONTEXT.WEAK;
+	}
+	const previousIndex = nonSpaceIndex(text, start, -1);
+	if (
+		/\d/.test(text[previousIndex] || '')
+		&& visuallyAttachedPrecedingDigit(bt, start)
+	) {
+		return NUMERIC_CONTEXT.BLOCKED;
 	}
 	const prev = previousNonSpace(text, start);
 	const next = nextNonSpace(text, end);
@@ -212,7 +300,7 @@ function addDelimitedNumberWindows(windows, bt, blockRef, sourceStrength) {
 			continue;
 		}
 		const numericContext = getNumericMentionContext(
-			bt.text,
+			bt,
 			match.index,
 			match.index + match[0].length - 1,
 			open === '[' ? 'brackets' : 'parentheses',
@@ -251,7 +339,7 @@ function addSuperscriptNumberWindows(windows, bt, blockRef, sourceStrength) {
 		i--;
 		const numbers = numbersFromText(text);
 		const numericContext = getNumericMentionContext(
-			bt.text,
+			bt,
 			start,
 			i,
 			'superscript',
@@ -483,10 +571,13 @@ function getAuthorYearMention(text, words, yearWord, referenceIndex) {
 		return null;
 	}
 	const terminalAuthorTokens = getTerminalAuthorTokens(text, authorTokens, yearWord.start);
+	const offsetStart = (terminalAuthorTokens[0] || authorTokens[0]).start;
 	return {
-		offsetStart: (terminalAuthorTokens[0] || authorTokens[0]).start,
+		offsetStart,
 		offsetEnd: yearWord.end,
+		sourceWithinExtent: yearWord.end - offsetStart + 1 <= AUTHOR_YEAR_MENTION_MAX_CHARS,
 		tokens: authorTokens.map(token => token.value),
+		tokenSpans: authorTokens.map(({ value, start }) => ({ value, start })),
 		terminalTokens: terminalAuthorTokens.map(token => token.value),
 	};
 }
@@ -519,7 +610,12 @@ function addAuthorYearWindows(windows, bt, blockRef, referenceIndex, sourceStren
 				value: getAuthorYearValue(authorToken, parsedYear.year, parsedYear.suffix),
 				authorToken,
 			})),
-			{ sourceStrength, terminalAuthorTokens: mention.terminalTokens },
+			{
+				sourceStrength,
+				authorTokenSpans: mention.tokenSpans,
+				terminalAuthorTokens: mention.terminalTokens,
+				sourceWithinExtent: mention.sourceWithinExtent,
+			},
 		);
 	}
 }
@@ -792,6 +888,7 @@ function getAuthorCandidates(mention, referenceIndex, authorIdentity = null) {
 					reference,
 					tokens: new Set(),
 					tokenPositions: new Map(),
+					tokenUnits: new Map(),
 					positions: new Set(),
 					minPosition: Number.MAX_SAFE_INTEGER,
 					maxPosition: -1,
@@ -800,6 +897,7 @@ function getAuthorCandidates(mention, referenceIndex, authorIdentity = null) {
 			}
 			candidate.tokens.add(authorToken);
 			candidate.tokenPositions.set(authorToken, position);
+			candidate.tokenUnits.set(authorToken, reference.authorTokenUnits?.get(authorToken) ?? position);
 			candidate.positions.add(position);
 			candidate.minPosition = Math.min(candidate.minPosition, position);
 			candidate.maxPosition = Math.max(candidate.maxPosition, position);
@@ -850,6 +948,17 @@ function getCandidateAuthorPosition(candidate, authorTokens) {
 		}
 	}
 	return position;
+}
+
+function getCandidateAuthorSpread(candidate, authorTokens) {
+	let unit = -1;
+	for (const token of authorTokens) {
+		const tokenUnit = candidate.tokenUnits?.get(token);
+		if (Number.isInteger(tokenUnit)) {
+			unit = Math.max(unit, tokenUnit);
+		}
+	}
+	return unit;
 }
 
 function getIdentityCandidates(
@@ -917,12 +1026,20 @@ function chooseAuthorCandidate(mention, referenceIndex, authorIdentity = null) {
 			const bestPosition = Math.min(
 				...sharedCandidates.map(candidate => getCandidateAuthorPosition(candidate, authorTokens))
 			);
-			return chooseCandidate(
-				sharedCandidates.filter(candidate =>
-					getCandidateAuthorPosition(candidate, authorTokens) === bestPosition
-				),
-				mention
+			let pool = sharedCandidates.filter(candidate =>
+				getCandidateAuthorPosition(candidate, authorTokens) === bestPosition
 			);
+			// A citation naming N authors refers to a work by exactly those
+			// authors, so prefer the entry where the cited names span the
+			// fewest author units ("Izza and Marques-Silva" over "Izza,
+			// Ignatiev, and Marques-Silva")
+			const bestSpread = Math.min(
+				...pool.map(candidate => getCandidateAuthorSpread(candidate, authorTokens))
+			);
+			pool = pool.filter(candidate =>
+				getCandidateAuthorSpread(candidate, authorTokens) === bestSpread
+			);
+			return chooseCandidate(pool, mention);
 		}
 	}
 	const bestPosition = Math.min(...candidates.map(candidate => candidate.minPosition));
@@ -1002,6 +1119,146 @@ function selectRunNumericStyles(referenceIndex, channelStats) {
 	return runNumericStyles;
 }
 
+const NOTE_LABEL_MAX = 999;
+
+function getNoteGroups(referenceIndex, runNumericStyles) {
+	// Partition numerically labeled note entries into groups wherever the
+	// printed numbering restarts ("1. …" after "13. …" begins a new
+	// chapter's notes); a group may span consecutive list blocks
+	const groups = [];
+	let group = null;
+	let prevLabel = null;
+	for (const reference of referenceIndex.entries) {
+		const label = parseInt(reference.label, 10);
+		if (!Number.isInteger(label) || String(label) !== reference.label || label > NOTE_LABEL_MAX) {
+			continue;
+		}
+		if (!group || (prevLabel !== null && label <= prevLabel)) {
+			group = { labels: new Map(), superscript: false };
+			groups.push(group);
+		}
+		if (!group.labels.has(reference.label)) {
+			group.labels.set(reference.label, reference);
+		}
+		// Nearest-run resolution only reaches the first note groups, so
+		// later groups can lack superscript evidence; one superscript or
+		// unstyled member run qualifies its whole group, while groups
+		// claimed entirely by another numeric channel (e.g. a numbered
+		// bibliography) stay out
+		const style = runNumericStyles.get(reference.run);
+		if (style === 'numeric-superscript' || style === null) {
+			group.superscript = true;
+		}
+		prevLabel = label;
+	}
+	return groups.filter(group => group.superscript).map(group => group.labels);
+}
+
+function getNoteMarkers(mentionWindows) {
+	const markers = [];
+	for (const mention of mentionWindows) {
+		if (mention.channel !== 'numeric-superscript') {
+			continue;
+		}
+		for (const key of mention.keys) {
+			if (key.type === 'number') {
+				markers.push({ mention, value: key.value });
+			}
+		}
+	}
+	markers.sort((a, b) =>
+		a.mention.src.blockRef[0] - b.mention.src.blockRef[0]
+		|| a.mention.src.offsetStart - b.mention.src.offsetStart);
+	return markers;
+}
+
+function countGroupMatches(markers, group) {
+	const seen = new Set();
+	for (const marker of markers) {
+		if (group.has(marker.value)) {
+			seen.add(marker.value);
+		}
+	}
+	return seen.size;
+}
+
+export function createNoteAssignments(mentionWindows, referenceIndex, runNumericStyles) {
+	// Note markers and notes appear in the same order, so when numbering
+	// restarts per chapter, the correct linking is the order-preserving
+	// one-to-one matching between the marker stream and the note groups —
+	// not the nearest run, which sends every chapter's markers to the
+	// first group of a back-of-book notes section
+	const groups = getNoteGroups(referenceIndex, runNumericStyles);
+	if (groups.length < 2) {
+		return null;
+	}
+	const markers = getNoteMarkers(mentionWindows);
+	if (!markers.length) {
+		return null;
+	}
+	const m = markers.length;
+	// prev[i]: max distinct notes matched assigning the first i markers to
+	// the groups handled so far; each round relaxes forward from every
+	// split point j with a running distinct-count for the g-th segment
+	let prev = new Int32Array(m + 1).fill(-1);
+	prev[0] = 0;
+	const splits = [];
+	for (const group of groups) {
+		const row = new Int32Array(m + 1).fill(-1);
+		const split = new Int32Array(m + 1);
+		for (let j = 0; j <= m; j++) {
+			if (prev[j] < 0) {
+				continue;
+			}
+			let score = prev[j];
+			if (score > row[j]) {
+				row[j] = score;
+				split[j] = j;
+			}
+			const seen = new Set();
+			for (let i = j; i < m; i++) {
+				if (group.has(markers[i].value) && !seen.has(markers[i].value)) {
+					seen.add(markers[i].value);
+					score++;
+				}
+				if (score > row[i + 1]) {
+					row[i + 1] = score;
+					split[i + 1] = j;
+				}
+			}
+		}
+		splits.push(split);
+		prev = row;
+	}
+	// Only trust the alignment when it beats treating all markers as
+	// citations of one single group (i.e. the numbering genuinely restarts
+	// and the markers bear that out)
+	const bestScore = prev[m];
+	const singleBest = Math.max(...groups.map(group => countGroupMatches(markers, group)));
+	if (bestScore <= singleBest) {
+		return null;
+	}
+	const assignments = new Map();
+	let end = m;
+	for (let g = groups.length - 1; g >= 0; g--) {
+		const start = splits[g][end];
+		for (let i = start; i < end; i++) {
+			const reference = groups[g].get(markers[i].value);
+			if (!reference) {
+				continue;
+			}
+			let byValue = assignments.get(markers[i].mention);
+			if (!byValue) {
+				byValue = new Map();
+				assignments.set(markers[i].mention, byValue);
+			}
+			byValue.set(markers[i].value, reference);
+		}
+		end = start;
+	}
+	return assignments;
+}
+
 export function createCitationResolutionContext(mentionWindows, referenceIndex) {
 	const authorIdentity = new Map();
 	for (const mention of mentionWindows) {
@@ -1035,6 +1292,22 @@ export function createCitationResolutionContext(mentionWindows, referenceIndex) 
 		);
 	}
 	context.runNumericStyles = selectRunNumericStyles(referenceIndex, channelStats);
+	context.noteAssignments = createNoteAssignments(
+		mentionWindows,
+		referenceIndex,
+		context.runNumericStyles
+	);
+	if (context.noteAssignments) {
+		// The alignment itself is the superscript evidence for note runs
+		// that nearest-run resolution never reached
+		for (const byValue of context.noteAssignments.values()) {
+			for (const reference of byValue.values()) {
+				if (context.runNumericStyles.get(reference.run) === null) {
+					context.runNumericStyles.set(reference.run, 'numeric-superscript');
+				}
+			}
+		}
+	}
 	return context;
 }
 
@@ -1071,8 +1344,8 @@ export function resolveMention(mention, referenceIndex, context = null) {
 			continue;
 		}
 		for (const key of keys) {
-			const entries = getEntriesForKey(referenceIndex, key);
-			const reference = chooseReference(entries, mention);
+			const reference = context?.noteAssignments?.get(mention)?.get(key.value)
+				|| chooseReference(getEntriesForKey(referenceIndex, key), mention);
 			if (reference && !resolved.includes(reference)) {
 				resolved.push(reference);
 			}
@@ -1085,8 +1358,21 @@ export function resolveMention(mention, referenceIndex, context = null) {
 }
 
 export function isMentionReferenceAllowed(mention, reference, context = null) {
+	if (mention.channel === 'author-year' && mention.sourceWithinExtent === false) {
+		return false;
+	}
+	// A reference bound by the note alignment carries stronger evidence
+	// than per-run channel statistics
+	if (context?.noteAssignments?.get(mention)) {
+		for (const assigned of context.noteAssignments.get(mention).values()) {
+			if (assigned === reference) {
+				return true;
+			}
+		}
+	}
+	const runNumericStyle = context?.runNumericStyles?.get(reference.run);
 	if (!isNumericChannel(mention.channel)) {
-		return true;
+		return !isNumericChannel(runNumericStyle);
 	}
 	if (mention.sourceStrength !== 'strong') {
 		return false;
@@ -1118,8 +1404,26 @@ function isContainedSameDestinationOverlap(ref, source, references) {
 		&& !sameRange(source, ref.src);
 }
 
+function isContainedDestinationGuess(ref, source) {
+	let guessedSource = ref.src;
+	if (typeof guessedSource?.text === 'string') {
+		let leading = guessedSource.text.match(/^[^\p{L}\p{N}]*/u)?.[0].length || 0;
+		let trailing = guessedSource.text.match(/[^\p{L}\p{N}]*$/u)?.[0].length || 0;
+		guessedSource = {
+			...guessedSource,
+			offsetStart: guessedSource.offsetStart + leading,
+			offsetEnd: guessedSource.offsetEnd - trailing,
+		};
+	}
+	return ref.destinationResolution === 'source-text'
+		&& sourceContains(source, guessedSource);
+}
+
 function hasBlockingSourceOverlap(refsList, source, references) {
 	return getOverlappingRefs(refsList, source).some(ref => {
+		if (isContainedDestinationGuess(ref, source)) {
+			return false;
+		}
 		if (sameRange(source, ref.src) && matchesAnyReferenceDest(ref, references)) {
 			return false;
 		}
@@ -1134,7 +1438,8 @@ function replaceContainedSameDestinationOverlaps(refsList, source, references) {
 		return;
 	}
 	const filtered = group.filter(ref =>
-		!isContainedSameDestinationOverlap(ref, source, references));
+		!isContainedSameDestinationOverlap(ref, source, references)
+		&& !isContainedDestinationGuess(ref, source));
 	if (filtered.length) {
 		refsList.set(key, filtered);
 	}
@@ -1169,7 +1474,23 @@ function hasLocalProseEvidence(reference, mention, localRefsByBlock) {
 	return sources.some(source => source.offsetEnd < mention.src.offsetStart);
 }
 
-function addRef(refsList, source, reference) {
+function tightenAuthorYearSource(mention, references) {
+	// The mention extent starts at the first word matching any known author
+	// token; clamp it to the first token that belongs to a reference the
+	// mention actually resolved to, so prose lead-ins ("see also X 2009")
+	// never survive into the citation extent
+	if (mention.channel !== 'author-year' || !Array.isArray(mention.authorTokenSpans)) {
+		return mention.src;
+	}
+	const span = mention.authorTokenSpans.find(span =>
+		references.some(reference => reference.authorTokens?.includes(span.value)));
+	if (!span || span.start <= mention.src.offsetStart) {
+		return mention.src;
+	}
+	return { ...mention.src, offsetStart: span.start };
+}
+
+function addRef(refsList, source, reference, metadata = null) {
 	if (!source?.blockRef || !reference?.src?.blockRef || sameBlock(source, reference.src)) {
 		return;
 	}
@@ -1187,7 +1508,7 @@ function addRef(refsList, source, reference) {
 	)) {
 		return;
 	}
-	group.push({ src: source, dest: reference.src, type: 'citation' });
+	group.push({ src: source, dest: reference.src, type: 'citation', ...metadata });
 }
 
 function numberFromText(text) {
@@ -1211,7 +1532,10 @@ function addEmbeddedLinkRefs(refsList, annotLinkRefs, referenceIndex) {
 				reference = entries.find(entry => entry.run.ref[0] === link.dest.blockRef[0]) || null;
 			}
 			if (reference) {
-				addRef(refsList, link.src, reference);
+				let metadata = link.destinationResolution
+					? { destinationResolution: link.destinationResolution }
+					: null;
+				addRef(refsList, link.src, reference, metadata);
 			}
 		}
 	}
@@ -1251,10 +1575,14 @@ export function getCitationRefs(
 			}
 			references.push(reference);
 		}
-		if (!references.length || hasBlockingSourceOverlap(refsList, mention.src, references)) {
+		if (!references.length) {
 			continue;
 		}
-		replaceContainedSameDestinationOverlaps(refsList, mention.src, references);
+		const source = tightenAuthorYearSource(mention, references);
+		if (hasBlockingSourceOverlap(refsList, source, references)) {
+			continue;
+		}
+		replaceContainedSameDestinationOverlaps(refsList, source, references);
 		for (const reference of references) {
 			if (mention.kind === 'prose-identity') {
 				const sourceKey = blockKey(mention.src.blockRef);
@@ -1269,7 +1597,7 @@ export function getCitationRefs(
 				}
 				proseRefs.add(destKey);
 			}
-			addRef(refsList, mention.src, reference);
+			addRef(refsList, source, reference);
 		}
 	}
 

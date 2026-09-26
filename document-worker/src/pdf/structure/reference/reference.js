@@ -1,5 +1,7 @@
 import { getReferenceSourceEvidence } from './evidence.js';
 import { getLogicalBlockText } from '../../../../structured-document-text/src/parts.js';
+import { isTransparentBetweenParts } from '../flow-policy.js';
+import { getCrossPageListItemSiblingRelation } from '../list-relations.js';
 
 
 const REFERENCE_LIST_DETECTION = {
@@ -101,6 +103,115 @@ function getItemId(text) {
 	return null;
 }
 
+function getNodeByRef(structure, ref) {
+	let node = { content: structure?.content };
+	for (const index of ref || []) {
+		if (!Number.isInteger(index) || !Array.isArray(node?.content)) {
+			return null;
+		}
+		node = node.content[index];
+		if (!node || typeof node !== 'object') {
+			return null;
+		}
+	}
+	return node;
+}
+
+function hasOnlyTransparentBlocksBetween(structure, firstIndex, secondIndex) {
+	for (let i = firstIndex + 1; i < secondIndex; i++) {
+		if (!isTransparentBetweenParts(structure.content[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function canJoinReferenceListRuns(structure, first, second, firstListRef = first?.ref) {
+	const firstIndex = firstListRef?.[0];
+	const secondIndex = second?.ref?.[0];
+	if (
+		firstListRef?.length !== 1
+		|| second?.ref?.length !== 1
+		|| !Number.isInteger(firstIndex)
+		|| !Number.isInteger(secondIndex)
+		|| secondIndex <= firstIndex
+		|| !hasOnlyTransparentBlocksBetween(structure, firstIndex, secondIndex)
+	) {
+		return false;
+	}
+
+	const firstList = getNodeByRef(structure, firstListRef);
+	const secondList = getNodeByRef(structure, second.ref);
+	if (
+		firstList?.type !== 'list'
+		|| secondList?.type !== 'list'
+		|| !Array.isArray(firstList.content)
+		|| !Array.isArray(secondList.content)
+		|| firstList.content.length === 0
+		|| secondList.content.length === 0
+	) {
+		return false;
+	}
+
+	const firstLastIndex = firstList.content.length - 1;
+	const firstLastRef = [...firstListRef, firstLastIndex];
+	const firstLast = firstList.content[firstLastIndex];
+	let secondFirstIndex = 0;
+	let continuationBlockRef = null;
+	const secondFirst = secondList.content[secondFirstIndex];
+	if (
+		Array.isArray(firstLast?.nextPart)
+		&& Array.isArray(secondFirst?.previousPart)
+		&& firstLast.nextPart.length === 2
+		&& firstLast.nextPart[0] === second.ref[0]
+		&& firstLast.nextPart[1] === secondFirstIndex
+		&& secondFirst.previousPart.length === firstLastRef.length
+		&& secondFirst.previousPart.every((value, index) => value === firstLastRef[index])
+	) {
+		continuationBlockRef = [second.ref[0], secondFirstIndex];
+		secondFirstIndex++;
+	}
+
+	if (!getCrossPageListItemSiblingRelation(
+		firstLast,
+		secondList.content[secondFirstIndex],
+		{ structure }
+	)) {
+		return false;
+	}
+
+	return { continuationBlockRef };
+}
+
+function joinContinuedReferenceListRuns(structure, candidates) {
+	const joined = [];
+	const lastListRefs = new Map();
+	for (const candidate of candidates) {
+		const previous = joined.at(-1);
+		const relation = previous && canJoinReferenceListRuns(
+			structure,
+			previous,
+			candidate,
+			lastListRefs.get(previous)
+		);
+		if (!relation) {
+			joined.push(candidate);
+			lastListRefs.set(candidate, candidate.ref);
+			continue;
+		}
+		if (relation.continuationBlockRef) {
+			const previousReference = previous.references.at(-1);
+			previousReference.continuationBlockRefs ||= [];
+			previousReference.continuationBlockRefs.push(relation.continuationBlockRef);
+			previous.blockRefs.push(relation.continuationBlockRef);
+		}
+		previous.blockRefs.push(...candidate.blockRefs);
+		previous.references.push(...candidate.references);
+		lastListRefs.set(previous, candidate.ref);
+	}
+	return joined;
+}
+
 export function getReferenceLists(structure, regularWordsSet) {
 	const candidates = [];
 	let prevBlock = null;
@@ -140,7 +251,7 @@ export function getReferenceLists(structure, regularWordsSet) {
 				candidate.references.push({ id, text, src: { blockRef: [i, j] } });
 			}
 
-			if (candidate.references.length > 0 && isListValid(candidate)) {
+			if (candidate.references.length > 0) {
 				candidates.push(candidate);
 			}
 
@@ -187,5 +298,5 @@ export function getReferenceLists(structure, regularWordsSet) {
 
 	addParagraphReferenceList(candidates, paragraphCandidate);
 
-	return candidates;
+	return joinContinuedReferenceListRuns(structure, candidates).filter(isListValid);
 }
