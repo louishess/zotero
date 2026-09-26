@@ -1298,8 +1298,9 @@ describe("Item pane", function () {
 
 			let attachmentRow = attachmentsBox.querySelector(`attachment-row[attachment-id="${attachment.id}"]`);
 			attachmentRow._attachmentButton.click();
-			await Zotero.Promise.delay(100);
-			let reader = await Zotero.Reader.getByTabID(Zotero_Tabs.selectedID);
+			await waitForCallback(() => Zotero.Reader.getByTabID(Zotero_Tabs.selectedID)?.itemID === attachment.id);
+			let reader = Zotero.Reader.getByTabID(Zotero_Tabs.selectedID);
+			await reader._openPromise;
 			// Should open attachment
 			assert.equal(reader.itemID, attachment.id);
 		});
@@ -1353,8 +1354,9 @@ describe("Item pane", function () {
 				view: window
 			});
 			preview.dispatchEvent(event);
-			await Zotero.Promise.delay(100);
-			let reader = await Zotero.Reader.getByTabID(Zotero_Tabs.selectedID);
+			await waitForCallback(() => Zotero.Reader.getByTabID(Zotero_Tabs.selectedID)?.itemID === attachment.id);
+			let reader = Zotero.Reader.getByTabID(Zotero_Tabs.selectedID);
+			await reader._openPromise;
 			// Should open attachment
 			assert.equal(reader.itemID, attachment.id);
 		});

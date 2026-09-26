@@ -4352,7 +4352,15 @@ class Reader {
 				}
 			});
 			this._readers.push(reader);
-			if (reader._window) await reader._initPromise;
+			if (reader._window) {
+				try {
+					await reader._openPromise;
+				}
+				catch (error) {
+					reader.close();
+					throw error;
+				}
+			}
 			Zotero.Session.debounceSave();
 		}
 		else {
@@ -4384,7 +4392,15 @@ class Reader {
 				}
 			});
 			this._readers.push(reader);
-			await reader._initPromise;
+			// Initialization resolves only on success. Await the startup operation
+			// so a failed/closed reader cannot retain the attachment reservation.
+			try {
+				await reader._openPromise;
+			}
+			catch (error) {
+				reader.close();
+				throw error;
+			}
 		}
 		
 		if (!openInBackground

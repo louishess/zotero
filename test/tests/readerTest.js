@@ -18,6 +18,27 @@ describe("Reader", function () {
 			Zotero.Prefs.set('reader.annotations.storageMode', 'standard');
 		});
 
+		it('releases the attachment reservation and permits retry after reader startup fails', async function () {
+			let attachment = await importFileAttachment('test.pdf');
+			let initial = await Zotero.Reader.open(attachment.id);
+			let prototype = Object.getPrototypeOf(initial);
+			initial.close();
+			let wait = sinon.stub(prototype, '_waitForReader').rejects(new Error('Simulated reader startup failure'));
+			try {
+				let error = await getPromiseError(Zotero.Reader.open(attachment.id));
+				assert.match(error.message, /Simulated reader startup failure/);
+				assert.isFalse(Zotero.Reader._readers.some(reader => reader.itemID === attachment.id));
+				let released = await Zotero.AnnotationStorageCoordinator.withAttachmentLock(attachment.id, () => true);
+				assert.isTrue(released);
+			}
+			finally {
+				wait.restore();
+			}
+			let reopened = await Zotero.Reader.open(attachment.id);
+			assert.isOk(reopened._internalReader);
+			reopened.close();
+		});
+
 		it('should create/update annotations', async function () {
 			Zotero.Prefs.set('reader.annotations.storageMode', 'standard');
 			var attachment = await importFileAttachment('test.pdf');
