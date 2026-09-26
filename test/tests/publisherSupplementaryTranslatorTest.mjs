@@ -7,6 +7,7 @@ async function loadTranslator(fileName) {
 	let code = await readFile(new URL(fileName, TRANSLATOR_DIR), 'utf8');
 	code = code.replace(/^\s*{[\s\S]*?}\s*?[\r\n]/, '');
 	let context = {
+		URL,
 		ZU: {
 			trimInternal(text) {
 				return text.replace(/\s+/g, ' ').trim();
