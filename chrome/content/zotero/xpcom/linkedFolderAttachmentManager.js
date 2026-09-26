@@ -38,6 +38,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	const FOLDER_PREFIX = 'folder/';
 	const MANAGED_PREFIX = 'managed/';
 	const ORPHAN_PREFIX = 'orphan/';
+	const OWNER_FILENAME = '.zotero-linked-folder-owner.json';
 	const FORMAT = 'bibliography=http://www.zotero.org/styles/american-chemical-society';
 	const MAX_FOLDER_CODE_POINTS = 100;
 	const PDF_CONTENT_TYPES = new Set([
@@ -57,6 +58,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 	let _prefObserverIDs = [];
 	let _queues = new Map();
 	let _startupTimer;
+	let _managerOwnedErasures = new Set();
 
 	function _now() {
 		return new Date().toISOString();
@@ -190,6 +192,95 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		return !!a && !!b && a.size == b.size && a.sha256 == b.sha256;
 	}
 
+	function _canContinue() {
+		return !_paused && Zotero.Prefs.get(PREF_ENABLED);
+	}
+
+	async function _readOwnerClaim(path) {
+		try {
+			return await IOUtils.readJSON(path);
+		}
+		catch (e) {
+			if (e.name == 'NotFoundError') return null;
+			throw e;
+		}
+	}
+
+	async function _ensureMigrationOwner(job, root) {
+		let ownerID = Zotero.Users.getLocalUserKey();
+		let ownerPath = PathUtils.join(root, OWNER_FILENAME);
+		let claim = await _readOwnerClaim(ownerPath);
+		if (!claim) {
+			let proposed = {
+				v: 1,
+				ownerID,
+				generation: job.ownerID == ownerID && job.ownerGeneration
+					? job.ownerGeneration
+					: Zotero.Utilities.randomString(16),
+				createdAt: _now(),
+			};
+			let tempPath = `${ownerPath}.tmp-${ownerID}-${Zotero.Utilities.randomString(8)}`;
+			try {
+				await IOUtils.writeJSON(tempPath, proposed);
+				await IOUtils.move(tempPath, ownerPath, { noOverwrite: true });
+				claim = proposed;
+			}
+			catch (e) {
+				await IOUtils.remove(tempPath, { ignoreAbsent: true });
+				claim = await _readOwnerClaim(ownerPath);
+				if (!claim) throw e;
+			}
+		}
+
+		let validClaim = claim.v == 1 && typeof claim.ownerID == 'string'
+			&& typeof claim.generation == 'string';
+		let ownsClaim = validClaim && claim.ownerID == ownerID;
+		let matchesJob = !job.ownerID
+			|| (job.ownerID == claim.ownerID && job.ownerGeneration == claim.generation);
+		if (!ownsClaim || !matchesJob) {
+			await _setPhase(job, 'conflict', {
+				lastError: 'Another Zotero client owns linked-folder migration',
+				conflictingOwnerID: validClaim ? claim.ownerID : null,
+				conflictingOwnerGeneration: validClaim ? claim.generation : null,
+			});
+			return false;
+		}
+		if (!job.ownerID) {
+			Object.assign(job, {
+				ownerID: claim.ownerID,
+				ownerGeneration: claim.generation,
+			});
+			await _saveJob(job);
+		}
+		return true;
+	}
+
+	async function _verifyCurrentSource(job, sourcePath) {
+		let expected = {
+			size: job.sourceSize,
+			sha256: job.sourceSHA256,
+		};
+		let current;
+		try {
+			current = await _fileIdentity(sourcePath);
+		}
+		catch {
+			await _setPhase(job, 'conflict', {
+				lastError: 'The stored source PDF became unavailable during migration',
+			});
+			return false;
+		}
+		if (!_sameIdentity(current, expected)) {
+			await _setPhase(job, 'conflict', {
+				lastError: 'The stored source PDF changed during migration',
+				currentSourceSize: current.size,
+				currentSourceSHA256: current.sha256,
+			});
+			return false;
+		}
+		return true;
+	}
+
 	async function _eligibleItem(item) {
 		if (!item || item.deleted || item.libraryID != Zotero.Libraries.userLibraryID
 				|| !item.isStoredFileAttachment() || !_isPDF(item) || !item.parentItemID) {
@@ -267,16 +358,13 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		return folder;
 	}
 
-	async function _chooseTarget(folder, filename, sourceIdentity) {
+	async function _chooseTarget(folder, filename) {
 		let parsed = PathUtils.filename(filename);
 		let extension = /\.pdf$/iu.test(parsed) ? parsed.slice(-4) : '.pdf';
 		let base = parsed.slice(0, parsed.length - extension.length) || 'attachment';
 		for (let index = 1; ; index++) {
 			let candidate = PathUtils.join(folder, index == 1 ? `${base}${extension}` : `${base} (${index})${extension}`);
 			if (!(await IOUtils.exists(candidate))) return { path: candidate, reuse: false };
-			if (_sameIdentity(await _fileIdentity(candidate), sourceIdentity)) {
-				return { path: candidate, reuse: true };
-			}
 		}
 	}
 
@@ -381,25 +469,16 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 			return existing;
 		}
 
-		// Data sync may deliver another migration owner's replacement before
-		// this client creates its planned item. Adopt an unambiguous replacement
-		// that points at the exact verified relative path.
+		// A linked item at the planned path but with another key represents a
+		// separate attachment or another migration generation. Never collapse it
+		// merely because the bytes happen to be equal.
 		let replacements = Zotero.Items.get(source.parentItem.getAttachments(false)).filter(
 			item => item.isLinkedFileAttachment()
 				&& item.attachmentPath == job.targetRelativePath
 		);
-		if (replacements.length == 1) {
-			existing = replacements[0];
-			job.newAttachmentKey = existing.key;
-			await _setPhase(job, 'linked-item-created', {
-				linkedItemID: existing.id,
-				adoptedSyncedReplacement: true,
-			});
-			return existing;
-		}
-		if (replacements.length > 1) {
+		if (replacements.length) {
 			await _setPhase(job, 'conflict', {
-				lastError: 'Multiple linked replacements refer to the same managed cloud file',
+				lastError: 'Another attachment already refers to the planned managed cloud file',
 				conflictingAttachmentKeys: replacements.map(item => item.key),
 			});
 			throw new Error(job.lastError);
@@ -438,6 +517,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 			});
 			throw new Error(job.lastError);
 		}
+		if (!_canContinue()) return false;
 		if (job.phase == 'linked-item-created') {
 			await Zotero.DB.executeTransaction(async () => {
 				await Zotero.Items.moveChildItems(source, linked);
@@ -463,14 +543,21 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		})) {
 			throw new Error('The new relative linked attachment could not be reopened and verified');
 		}
+		if (!_canContinue()) return false;
+		let sourcePath = await source.getFilePathAsync();
+		if (!sourcePath || !await _verifyCurrentSource(job, sourcePath)) return false;
 
 		if (Zotero.AnnotationStorageCoordinator?.clearLocalState) {
 			await Zotero.AnnotationStorageCoordinator.clearLocalState(source.id);
 		}
 		if (source.id) {
-			await source.eraseTx({
-				notifierData: { linkedFolderAttachmentManager: true, replacementKey: linked.key },
-			});
+			_managerOwnedErasures.add(source.id);
+			try {
+				await source.eraseTx();
+			}
+			finally {
+				_managerOwnedErasures.delete(source.id);
+			}
 		}
 		await _setPhase(job, 'source-erased');
 
@@ -509,6 +596,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				});
 				return false;
 			}
+			if (!await _ensureMigrationOwner(job, root)) return false;
 			Zotero.Prefs.set('saveRelativeAttachmentPath', true);
 
 			if (_isOpenInReader(source.id)) {
@@ -523,8 +611,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				let sourceIdentity = await _fileIdentity(sourcePath);
 				let target = await _chooseTarget(
 					folder,
-					_sanitizeFilename(source.attachmentFilename || PathUtils.filename(sourcePath)),
-					sourceIdentity
+					_sanitizeFilename(source.attachmentFilename || PathUtils.filename(sourcePath))
 				);
 				let relative = Zotero.Attachments.getBaseDirectoryRelativePath(target.path);
 				if (!relative.startsWith(Zotero.Attachments.BASE_PATH_PLACEHOLDER)) {
@@ -540,11 +627,15 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 					newAttachmentKey: job.newAttachmentKey || Zotero.DataObjectUtilities.generateKey(),
 				});
 			}
+			if (!await _verifyCurrentSource(job, sourcePath)) return false;
 
 			if (['target-selected', 'copied-temp', 'waiting-source', 'waiting-reader', 'waiting-root'].includes(job.phase)) {
 				await _copyAndVerify(job, sourcePath);
 			}
+			if (!_canContinue()) return false;
+			if (!await _verifyCurrentSource(job, sourcePath)) return false;
 			let linked = await _createLinkedItem(job, source);
+			if (!_canContinue()) return false;
 			return _transferChildrenAndIndexes(job, source, linked);
 		}
 		catch (e) {
@@ -562,7 +653,8 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		if (source) return this.queueAttachment(source.id, reason);
 		let linked = job.newAttachmentKey
 			&& await Zotero.Items.getByLibraryAndKeyAsync(job.libraryID, job.newAttachmentKey);
-		if (linked?.isLinkedFileAttachment()) {
+		if (linked?.isLinkedFileAttachment()
+				&& ['children-transferred', 'source-erased'].includes(job.phase)) {
 			let path = await linked.getFilePathAsync();
 			if (path && _sameIdentity(await _fileIdentity(path), {
 				size: job.sourceSize,
@@ -581,6 +673,11 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				await _setPhase(job, 'complete', { lastError: null });
 				return linked;
 			}
+		}
+		if (linked?.isLinkedFileAttachment()) {
+			await _setPhase(job, 'conflict', {
+				lastError: 'The source disappeared before attachment metadata transfer was verified',
+			});
 		}
 		return false;
 	}
@@ -609,7 +706,18 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 			);
 			if (!record) continue;
 			let path = Zotero.Attachments.resolveRelativePath(record.relativePath);
-			if (path) plans.push({ attachment, record, path });
+			let root = _getRoot();
+			if (!path || !root || !Zotero.File.directoryContains(root, path)
+					|| !await IOUtils.exists(path)) {
+				await _recordOrphan(record, 'managed-file-unavailable-at-deletion');
+				continue;
+			}
+			let identity = await _fileIdentity(path);
+			if (!_sameIdentity(identity, { size: record.size, sha256: record.sha256 })) {
+				await _recordOrphan(record, 'managed-file-identity-mismatch-at-deletion');
+				continue;
+			}
+			plans.push({ attachment, record, path, identity });
 		}
 		return plans;
 	}
@@ -629,6 +737,9 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 					await this.resume();
 					await this.queueLibraryMigration(Zotero.Libraries.userLibraryID);
 				}
+				else {
+					await this.pause();
+				}
 			}));
 		}
 		if (Zotero.Prefs.get(PREF_ENABLED)) {
@@ -644,6 +755,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		if (_observerID) Zotero.Notifier.unregisterObserver(_observerID);
 		for (let id of _prefObserverIDs) Zotero.Prefs.unregisterObserver(id);
 		_prefObserverIDs = [];
+		_managerOwnedErasures.clear();
 		_initialized = false;
 	};
 
@@ -661,7 +773,7 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		}
 		else if (type == 'item' && event == 'delete') {
 			for (let id of ids) {
-				if (extraData?.[id]?.linkedFolderAttachmentManager) continue;
+				if (_managerOwnedErasures.has(id)) continue;
 				let libraryID = extraData?.[id]?.libraryID;
 				let key = extraData?.[id]?.key;
 				if (!libraryID || !key) continue;
@@ -671,14 +783,20 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		}
 	};
 
-	this.queueAttachment = function (itemID, reason = 'manual') {
-		let previous = _queues.get(itemID) || Promise.resolve();
-		let next = previous.then(() => _processJob(itemID, reason));
-		_queues.set(itemID, next);
-		next.finally(() => {
-			if (_queues.get(itemID) == next) _queues.delete(itemID);
-		});
-		return next;
+	this.queueAttachment = async function (itemID, reason = 'manual') {
+		let item = await Zotero.Items.getAsync(itemID);
+		let queueKey = item?.parentKey
+			? `${item.libraryID}/${item.parentKey}`
+			: `item/${itemID}`;
+		let previous = _queues.get(queueKey) || Promise.resolve();
+		let next = previous.catch(Zotero.logError).then(() => _processJob(itemID, reason));
+		_queues.set(queueKey, next);
+		try {
+			return await next;
+		}
+		finally {
+			if (_queues.get(queueKey) == next) _queues.delete(queueKey);
+		}
 	};
 
 	this.queueLibraryMigration = async function (libraryID = Zotero.Libraries.userLibraryID) {
@@ -829,7 +947,12 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 				`Move ${entries.length} managed linked file${entries.length == 1 ? '' : 's'} to the macOS Trash after deleting the Zotero item${entries.length == 1 ? '' : 's'}?`
 			);
 		}
-		return { approved, entries: approved ? entries.map(({ record, path }) => ({ record, path })) : [] };
+		return {
+			approved,
+			entries: approved
+				? entries.map(({ record, path, identity }) => ({ record, path, identity }))
+				: [],
+		};
 	};
 
 	this.completeManagedFileDeletion = async function (plan) {
@@ -838,9 +961,23 @@ Zotero.LinkedFolderAttachmentManager = new function () {
 		let orphaned = 0;
 		for (let entry of plan.entries) {
 			try {
+				let root = _getRoot();
+				if (!entry.path || !root || !Zotero.File.directoryContains(root, entry.path)) {
+					throw new Error('Managed file path is outside the current linked-folder root');
+				}
+				let exists = await IOUtils.exists(entry.path);
+				if (entry.identity) {
+					let currentIdentity = exists && await _fileIdentity(entry.path);
+					if (!_sameIdentity(currentIdentity, entry.identity)) {
+						throw new Error('Managed file changed after deletion was confirmed');
+					}
+				}
+				else if (exists) {
+					throw new Error('A file appeared at the managed path after deletion was confirmed');
+				}
 				let provider = _getProvider(_getRoot());
 				if (!provider.moveToTrash) throw new Error('Provider does not support moving files to Trash');
-				if (await provider.moveToTrash(entry.path)) moved++;
+				if (exists && await provider.moveToTrash(entry.path)) moved++;
 				let folder = PathUtils.parent(entry.path);
 				if (folder != _getRoot() && await IOUtils.exists(folder)) {
 					let children = await IOUtils.getChildren(folder);

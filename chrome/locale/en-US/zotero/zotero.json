@@ -1775,6 +1775,108 @@
 	"preferences-advanced-enable-bidi-ui.label": {
 		"string": "Enable bidirectional text editing utilities"
 	},
+	"preferences-advanced-pdf-annotations-title": {
+		"string": "PDF Annotations"
+	},
+	"preferences-advanced-pdf-annotations-standard.label": {
+		"string": "Standard"
+	},
+	"preferences-advanced-pdf-annotations-standard.tooltiptext": {
+		"string": "Save annotations as Zotero items. The PDF remains unchanged."
+	},
+	"preferences-advanced-pdf-annotations-standard.aria-description": {
+		"string": "Save annotations as Zotero items. The PDF remains unchanged."
+	},
+	"preferences-advanced-pdf-annotations-pdf-only.label": {
+		"string": "PDF-only Annotations"
+	},
+	"preferences-advanced-pdf-annotations-pdf-only.tooltiptext": {
+		"string": "Save annotations directly in writable personal-library PDFs. Zotero annotation items are not created."
+	},
+	"preferences-advanced-pdf-annotations-pdf-only.aria-description": {
+		"string": "Save annotations directly in writable personal-library PDFs. Zotero annotation items are not created."
+	},
+	"preferences-advanced-pdf-annotations-dual.label": {
+		"string": "PDF and Zotero Annotations"
+	},
+	"preferences-advanced-pdf-annotations-dual.tooltiptext": {
+		"string": "Save matching copies in the PDF and as Zotero annotation items for searching and data sync."
+	},
+	"preferences-advanced-pdf-annotations-dual.aria-description": {
+		"string": "Save matching copies in the PDF and as Zotero annotation items for searching and data sync."
+	},
+	"preferences-advanced-pdf-annotations-scope": {
+		"string": "This setting applies only to writable PDFs in personal libraries. Changes take effect when a PDF is next opened or reloaded."
+	},
+	"preferences-advanced-pdf-annotations-transition-title": {
+		"string": "Change Annotation Storage?"
+	},
+	"preferences-advanced-pdf-annotations-transition-warning": {
+		"string": "This change will remove one stored representation after verifying the replacement. Annotations remain available in the selected storage mode."
+	},
+	"preferences-advanced-linked-folder-enabled.label": {
+		"string": "Organize linked PDF attachments in a cloud folder"
+	},
+	"preferences-advanced-linked-folder-description": {
+		"string": "Uses the Linked Attachment Base Directory above. Eligible personal-library journal article PDFs are organized into portable relative paths. Run migration from only one Zotero computer at a time."
+	},
+	"preferences-advanced-linked-folder-provider": {
+		"string": "Folder provider:"
+	},
+	"preferences-advanced-linked-folder-provider-box-drive.label": {
+		"string": "Box Drive"
+	},
+	"preferences-advanced-linked-folder-provider-dropbox.label": {
+		"string": "Dropbox"
+	},
+	"preferences-advanced-linked-folder-provider-google-drive.label": {
+		"string": "Google Drive"
+	},
+	"preferences-advanced-linked-folder-provider-local-folder.label": {
+		"string": "Local folder"
+	},
+	"preferences-advanced-linked-folder-available-offline": {
+		"string": "Keep this folder and its PDF files available offline in your provider’s desktop app before starting or resuming migration."
+	},
+	"preferences-advanced-linked-folder-status-disabled": {
+		"string": "Cloud folder organization is off."
+	},
+	"preferences-advanced-linked-folder-status-root-required": {
+		"string": "Select a Linked Attachment Base Directory before enabling migration."
+	},
+	"preferences-advanced-linked-folder-status-root-valid": {
+		"string": "The linked attachment folder is available."
+	},
+	"preferences-advanced-linked-folder-status-root-invalid": {
+		"string": "The linked attachment folder is unavailable or is not valid for the selected provider."
+	},
+	"preferences-advanced-linked-folder-preview.label": {
+		"string": "Preview Migration"
+	},
+	"preferences-advanced-linked-folder-start.label": {
+		"string": "Start Migration"
+	},
+	"preferences-advanced-linked-folder-pause.label": {
+		"string": "Pause"
+	},
+	"preferences-advanced-linked-folder-resume.label": {
+		"string": "Resume"
+	},
+	"preferences-advanced-linked-folder-retry.label": {
+		"string": "Retry Failed"
+	},
+	"preferences-advanced-linked-folder-status-manager-unavailable": {
+		"string": "Migration controls will be available after the linked folder manager loads."
+	},
+	"preferences-advanced-linked-folder-preview-summary": {
+		"string": "{ eligible } eligible ({ size }); { skipped } skipped. No files have been moved."
+	},
+	"preferences-advanced-linked-folder-progress-summary": {
+		"string": "{ completed } of { total } completed; { pending } pending; { active } active; { failed } failed; { deferred } deferred."
+	},
+	"preferences-advanced-linked-folder-status-error": {
+		"string": "Migration status unavailable: { message }"
+	},
 	"preferences-advanced-data-dir.value": {
 		"string": "Data Directory:"
 	},
@@ -1952,14 +2054,26 @@
 	"reader-note-annotation": {
 		"string": "Note Annotation"
 	},
+	"reader-note-annotation-short": {
+		"string": "Note"
+	},
 	"reader-text-annotation": {
 		"string": "Text Annotation"
+	},
+	"reader-text-annotation-short": {
+		"string": "Text"
 	},
 	"reader-image-annotation": {
 		"string": "Image Annotation"
 	},
+	"reader-image-annotation-short": {
+		"string": "Image"
+	},
 	"reader-ink-annotation": {
 		"string": "Ink Annotation"
+	},
+	"reader-ink-annotation-short": {
+		"string": "Ink"
 	},
 	"reader-search-result-index": {
 		"string": "Search result"
@@ -2023,6 +2137,12 @@
 	},
 	"reader-prompt-transfer-from-pdf-text": {
 		"string": "Annotations stored in the PDF file will be moved to { target }."
+	},
+	"reader-prompt-store-in-pdf-title": {
+		"string": "Store Annotations in PDF"
+	},
+	"reader-prompt-store-in-pdf-text": {
+		"string": "Existing Zotero annotations will be moved into this PDF file and removed from the Zotero database. Continue?"
 	},
 	"reader-prompt-password-protected": {
 		"string": "The operation is not supported for password-protected PDF files."
@@ -2494,6 +2614,24 @@
 	},
 	"reader-read-aloud-annotation-popup-underline": {
 		"string": "Underline"
+	},
+	"annotation-storage-conflict-window": {
+		"string": "Resolve Annotation Conflicts"
+	},
+	"annotation-storage-conflict-window.title": {
+		"string": "Resolve Annotation Conflicts"
+	},
+	"annotation-storage-conflict-description": {
+		"string": "The PDF file and Zotero contain different versions of these annotations. Choose which version to keep for each annotation. Cancel opens the PDF read-only without changing either version."
+	},
+	"annotation-storage-conflict-item": {
+		"string": "Conflict { index }: { type } annotation, page { page }"
+	},
+	"annotation-storage-conflict-use-pdf.label": {
+		"string": "Use PDF"
+	},
+	"annotation-storage-conflict-use-zotero.label": {
+		"string": "Use Zotero"
 	},
 	"integration-docPrefs-window.title": {
 		"string": "{ app-name } - Document Preferences"
