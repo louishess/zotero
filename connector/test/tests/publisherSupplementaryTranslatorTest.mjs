@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const TRANSLATOR_DIR = new URL('../../src/zotero/translators/', import.meta.url);
+const TRANSLATOR_DIR = new URL('../../../translators/', import.meta.url);
 
 async function loadTranslator(fileName) {
 	let code = await readFile(new URL(fileName, TRANSLATOR_DIR), 'utf8');

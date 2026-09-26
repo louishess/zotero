@@ -1,5 +1,29 @@
 # ZoteroMerge — master agent guide
 
+## September 25 consolidation in progress
+
+The user approved consolidation into `/Users/louishess/Developer/ZoteroMerge`,
+publishing to `louishess/zotero` with `ZoteroMerge` as the default branch, latest
+upstream integration, recoverable retirement of old copies, and an efficiency
+audit report. Build and stage only: do not replace the installed app, touch the
+personal library, or change Chrome configuration. Audit-driven optimizations
+require a later selection; compatibility/build repairs are in scope now.
+
+Desktop stays at the root. Connector, document-worker, and translators are owned
+source imported with complete history. Unmodified dependencies remain pinned
+submodules registered by root `.gitmodules`. Connector uses its compatible
+official Desktop assets and the root custom translators. The source worker is
+built locally and its cache key includes source contents and dependency pins.
+
+Recovery inventory, verified Git bundles, the full original-file archive, and
+restore verification are in `/Users/louishess/Developer/ZoteroMerge-archive/2026-09-25`.
+Build and test evidence is in `/Users/louishess/Developer/ZoteroMerge-artifacts/2026-09-25`.
+The frozen upstream targets are Desktop `8c3b967bf9f7ed2a44bdf8c6a70b7c65489b8cfb`,
+Connector `876e41ad15139077f2e07b2f71a0fa94742e0b4a`, and translators
+`c83003773b65359e41466e1d419b2d1df5512af7`.
+All original working copies are currently preserved. Sections below are historical
+records and product invariants, not the new checkout layout.
+
 This is the single maintained project-state and agent guide for **ZoteroCombined** and its sibling **ZoteroCombinedConnector**. Update this file when implementation, build inputs, validation, or remaining work changes. Do not create another general planning or handoff document. The user-requested [TranslatorAgents.md](TranslatorAgents.md) is the specialist chemistry SI work guide; this file remains authoritative for project state and integration. Upstream submodule documentation remains owned by those projects.
 
 ## September 25 ACS/SI download repair — package ready, installation deferred

@@ -2,10 +2,10 @@
 
 const fs = require('fs-extra');
 const path = require('path');
+const crypto = require('crypto');
 const util = require('util');
-const exec = util.promisify(require('child_process').exec);
+const execFile = util.promisify(require('child_process').execFile);
 const { getSignatures, writeSignatures, onSuccess, onError } = require('./utils');
-const { buildsURL } = require('./config');
 
 const sharedAssetDirs = ['cmaps', 'standard_fonts'];
 const requiredFiles = ['worker.js', 'metadata.json', 'structured-document-text.js'];
@@ -16,43 +16,20 @@ async function getDocumentWorker(signatures) {
 	const modulePath = path.join(__dirname, '..', 'document-worker');
 	const targetDir = path.join(__dirname, '..', 'build', 'resource', 'document-worker');
 
-	const { stdout } = await exec('git rev-parse HEAD', { cwd: modulePath });
-	const hash = stdout.trim();
+	const hash = await getSourceHash(modulePath);
 
 	if (!('document-worker' in signatures)
 			|| signatures['document-worker'].hash !== hash
 			|| !(await isBuildReady(targetDir))) {
-		try {
-			const filename = hash + '.zip';
-			const tmpDir = path.join(__dirname, '..', 'tmp', 'builds', 'document-worker');
-			const url = buildsURL + 'document-worker/' + filename;
-
-			await fs.remove(targetDir);
-			await fs.ensureDir(targetDir);
-			await fs.ensureDir(tmpDir);
-
-			// Skip the shared asset directories, which are served from the
-			// reader build instead (see the cleanup loop below)
-			await exec(
-				`cd ${tmpDir}`
-				+ ` && (test -f ${filename} || curl -f ${url} -o ${filename})`
-				+ ` && unzip -o ${filename} -d ${targetDir} -x ${sharedAssetDirs.map(dir => `'${dir}/*'`).join(' ')}`
-			);
-			let missingFiles = await getMissingFiles(targetDir);
-			if (missingFiles.length) {
-				throw new Error(`Downloaded document-worker build is missing ${missingFiles.join(', ')}`);
-			}
+		// This worker contains local annotation changes and is built from owned source.
+		await execFile('npm', ['ci'], { cwd: modulePath, maxBuffer: 10 * 1024 * 1024 });
+		await execFile('npm', ['run', 'build'], { cwd: modulePath, maxBuffer: 10 * 1024 * 1024 });
+		let missingFiles = await getMissingFiles(path.join(modulePath, 'build'));
+		if (missingFiles.length) {
+			throw new Error(`Local document-worker build is missing ${missingFiles.join(', ')}`);
 		}
-		catch (e) {
-			console.error(e);
-			await exec('npm ci', { cwd: modulePath });
-			await exec('npm run build', { cwd: modulePath });
-			await fs.copy(path.join(modulePath, 'build'), targetDir);
-			let missingFiles = await getMissingFiles(targetDir);
-			if (missingFiles.length) {
-				throw new Error(`Local document-worker build is missing ${missingFiles.join(', ')}`);
-			}
-		}
+		await fs.remove(targetDir);
+		await fs.copy(path.join(modulePath, 'build'), targetDir);
 		signatures['document-worker'] = { hash };
 	}
 
@@ -68,6 +45,30 @@ async function getDocumentWorker(signatures) {
 		totalCount: 1,
 		processingTime: t2 - t1
 	};
+}
+
+async function getSourceHash(modulePath) {
+	const { stdout } = await execFile('git', ['ls-files', '--stage', '-z', '.'], { cwd: modulePath });
+	const hash = crypto.createHash('sha256');
+	for (let entry of stdout.split('\0').filter(Boolean)) {
+		let [metadata, filename] = entry.split('\t');
+		let [mode, object, stage] = metadata.split(' ');
+		if (stage !== '0') throw new Error('Resolve worker source conflicts before building');
+		hash.update(mode + '\0' + filename + '\0');
+		if (mode === '160000') {
+			let dependency = path.join(modulePath, filename);
+			if (!(await fs.pathExists(path.join(dependency, '.git')))) {
+				throw new Error(`Initialize worker dependency ${filename} before building`);
+			}
+			let { stdout: revision } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: dependency });
+			hash.update(object + '\0' + revision.trim());
+		}
+		else {
+			hash.update(await fs.readFile(path.join(modulePath, filename)));
+		}
+		hash.update('\0');
+	}
+	return hash.digest('hex');
 }
 
 async function isBuildReady(targetDir) {

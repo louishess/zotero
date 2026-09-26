@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 
-const TRANSLATOR = new URL('../../src/zotero/translators/ScienceDirect.js', import.meta.url);
+const TRANSLATOR = new URL('../../../translators/ScienceDirect.js', import.meta.url);
 const FIXTURES = new URL('./fixtures/', import.meta.url);
 
 class FixtureElement {

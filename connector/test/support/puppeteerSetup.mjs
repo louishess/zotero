@@ -46,7 +46,7 @@ const SEEDED_TRANSLATOR_IDS = [
 ];
 
 async function getTranslatorSeedData(translatorIDs, sourceRevision=null) {
-	const translatorDir = path.join(PROJECT_ROOT, 'src/zotero/translators');
+	const translatorDir = path.join(PROJECT_ROOT, '../translators');
 	const translatorIDSet = new Set(translatorIDs);
 	const translatorMetadata = [];
 	const translatorCode = {};

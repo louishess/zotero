@@ -1,6 +1,6 @@
 [submodule "src/zotero"]
 	path = src/zotero
-	url = https://github.com/louishess/zotero.git
+	url = https://github.com/zotero/zotero.git
 	branch = master
 
 [submodule "src/zotero-google-docs-integration"]
