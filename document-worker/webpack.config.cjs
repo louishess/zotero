@@ -31,6 +31,11 @@ module.exports = {
 		minimize: false
 	},
 	plugins: [
+		// Bundled decoders use the worker URL, never the build machine's source path.
+		// Runtimes without location obtain binary assets through dataProvider.
+		new webpack.DefinePlugin({
+			'import.meta.url': '(globalThis.location?.href || "file:///document-worker/worker.js")',
+		}),
 		// Ignore objects that only exist on browser and break webpack building process
 		new webpack.IgnorePlugin({ resourceRegExp: /^(canvas|fs|https|url|http)$/u })
 	],

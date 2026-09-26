@@ -47,6 +47,10 @@ const omni = path.join(app, 'Contents/Resources/app/omni.ja');
 const entries = execFileSync('unzip', ['-Z1', omni], { encoding: 'utf8' });
 assert(entries.includes('chrome/content/zotero/xpcom/annotationStorageCoordinator.js'));
 assert(entries.includes('resource/document-worker/worker.js'));
+const worker = execFileSync('unzip', ['-p', omni, 'resource/document-worker/worker.js'], {
+	encoding: 'utf8', maxBuffer: 16 * 1024 * 1024
+});
+assert(!worker.includes(root), 'Packaged worker must not contain checkout-local paths');
 assert(!/^test\//m.test(entries), 'Do not ship Desktop tests');
 for (const [name, target] of [['ZoteroMerge-macOS.zip', 'ZoteroMerge.app'],
 	['ZoteroMerge-Connector.zip', 'ZoteroMerge-Connector']]) {

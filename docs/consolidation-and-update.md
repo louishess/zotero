@@ -83,6 +83,10 @@ version was introduced.
 - Local ad-hoc packages clear hardened-runtime flags: their executable has no
   Team ID for library validation. Both signature verification and disposable
   startup must pass; a valid signature alone did not establish launchability.
+- Bundled PDF decoder `import.meta.url` uses the runtime worker location rather
+  than Webpack's build-machine source URL. Location-free runtimes continue to use
+  the binary data provider. Packages reject worker bundles containing checkout
+  paths; fresh-clone comparison checks the complete bundled source.
 
 ## Validation boundaries
 
