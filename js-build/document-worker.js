@@ -61,11 +61,19 @@ async function getSourceHash(modulePath) {
 				throw new Error(`Initialize worker dependency ${filename} before building`);
 			}
 			let { stdout: revision } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: dependency });
+			let { stdout: dirty } = await execFile('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: dependency });
+			if (dirty.trim()) throw new Error(`Worker dependency ${filename} has uncommitted source changes`);
 			hash.update(object + '\0' + revision.trim());
 		}
 		else {
 			hash.update(await fs.readFile(path.join(modulePath, filename)));
 		}
+		hash.update('\0');
+	}
+	const { stdout: untracked } = await execFile('git', ['ls-files', '--others', '--exclude-standard', '-z', '.'], { cwd: modulePath });
+	for (let filename of untracked.split('\0').filter(Boolean).sort()) {
+		hash.update('untracked\0' + filename + '\0');
+		hash.update(await fs.readFile(path.join(modulePath, filename)));
 		hash.update('\0');
 	}
 	return hash.digest('hex');
@@ -86,6 +94,7 @@ async function getMissingFiles(targetDir) {
 }
 
 module.exports = getDocumentWorker;
+module.exports.getSourceHash = getSourceHash;
 
 if (require.main === module) {
 	(async () => {
