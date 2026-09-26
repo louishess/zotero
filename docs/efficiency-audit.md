@@ -160,8 +160,9 @@ PDF fixtures. Measure cold/cloud files separately before choosing an interval.
 ### 5. P2: Separate shipped dependency risk from build-tool debt
 
 Status: **reported advisories and verified shipped call paths; exploitability not
-tested**. The current lockfiles yield 43 Desktop advisories (9 critical),
-29 Connector advisories (0 critical), and 16 worker advisories (0 critical).
+tested**. The current npm audits report 43 vulnerable Desktop package entries
+(9 critical), 29 Connector entries (0 critical), and 16 worker entries
+(0 critical). These totals are not counts of distinct advisories.
 These npm counts include transitive/build dependencies and are not counts of
 exploitable application flaws. Do not run a blanket `npm audit fix --force`.
 

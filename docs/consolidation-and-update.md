@@ -97,9 +97,11 @@ a disposable-browser startup and download-policy smoke check.
 The first broad Desktop run passed 3192/3223 checks; these totals include failing
 hooks. Isolation identified reader-startup integration trouble, which was repaired,
 plus UI focus/order and asynchronous WebDAV fixture failures also observed on an
-untouched upstream control. The subsequent full-run result is recorded in
-`final-desktop-all.log` and the external validation summary. Do not describe the
-initial run as fully passing or infer product failure solely from a cascading UI
+untouched upstream control. The subsequent full run passed 3203/3226 checks, with
+23 failures including hooks: debug startup, item-pane updates, retraction UI
+state, and a sync retry timing assertion. Its result is recorded in
+`final-desktop-all.log` and the external validation summary, alongside isolated
+reruns. Do not describe either full run as fully passing or infer product failure solely from a cascading UI
 test. Conversely, focused passing results do not establish a green full-suite run.
 
 Package commands do not install anything. Production Desktop smoke tests use a

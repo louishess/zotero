@@ -95,6 +95,7 @@ CI=1 ZOTEROMERGE_BENCHMARKS=1 \
    checks, update the manifest, then publish explicit branches/tags. Do not rebase,
    force-push, or install packages as part of an update.
 
-See [the efficiency audit](docs/efficiency-audit.md) for measured findings and
+See [the integration record](docs/consolidation-and-update.md) for conflict
+decisions and validation limits, and [the efficiency audit](docs/efficiency-audit.md) for measured findings and
 separately scoped recommendations. Live publisher access and multi-device cloud
 acceptance must not be inferred from fixture tests.
