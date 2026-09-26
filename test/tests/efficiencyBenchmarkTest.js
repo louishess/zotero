@@ -25,16 +25,24 @@ runEfficiencyBenchmarks('ZoteroMerge efficiency measurements', function () {
 		let copies = 0;
 		let probes = sinon.createSandbox();
 		let execute = Zotero.DB.executeTransaction.bind(Zotero.DB);
-		let query = Zotero.DB.queryAsync.bind(Zotero.DB);
+		let queryDepth = 0;
 		let stat = IOUtils.stat.bind(IOUtils);
 		let copy = IOUtils.copy.bind(IOUtils);
 		probes.stub(Zotero.DB, 'executeTransaction').callsFake(async (...args) => {
-			let nested = Zotero.DB.transactionInProgress();
+			let nested = Zotero.DB.inTransaction();
 			let start = performance.now();
 			try { return await execute(...args); }
 			finally { if (!nested) transactions.push(performance.now() - start); }
 		});
-		probes.stub(Zotero.DB, 'queryAsync').callsFake((...args) => { queryCount++; return query(...args); });
+		for (let method of ['queryAsync', 'valueQueryAsync', 'columnQueryAsync']) {
+			let query = Zotero.DB[method].bind(Zotero.DB);
+			probes.stub(Zotero.DB, method).callsFake((...args) => {
+				if (!queryDepth) queryCount++;
+				queryDepth++;
+				try { return query(...args); }
+				finally { queryDepth--; }
+			});
+		}
 		probes.stub(IOUtils, 'stat').callsFake((...args) => { stats++; return stat(...args); });
 		probes.stub(IOUtils, 'copy').callsFake((...args) => { copies++; return copy(...args); });
 		let start = performance.now();
@@ -66,6 +74,9 @@ runEfficiencyBenchmarks('ZoteroMerge efficiency measurements', function () {
 		await IOUtils.makeDirectory(fixtures);
 		sandbox = sinon.createSandbox();
 		await Zotero.Reader._stopAnnotationFilePolling();
+	});
+
+	beforeEach(function () {
 		Zotero.Prefs.set('linkedFolderAttachments.enabled', false);
 		Zotero.Prefs.set('linkedFolderAttachments.provider', 'local-folder');
 		Zotero.Prefs.set('reader.annotations.storageMode', 'standard');
@@ -126,17 +137,18 @@ runEfficiencyBenchmarks('ZoteroMerge efficiency measurements', function () {
 		let parent = await createDataObject('item', { itemType: 'journalArticle', title: 'Polling benchmark' });
 		let items = [];
 		for (let count of [100, 1000, 10000]) {
-			await Zotero.DB.executeTransaction(async () => {
-				while (items.length < count) {
+			while (items.length < count) {
 					let name = `poll-${items.length}.pdf`;
 					await IOUtils.copy(PathUtils.join(getTestDataDirectory().path, 'test.pdf'), PathUtils.join(root, name));
 					items.push(await Zotero.Attachments.linkFromFileWithRelativePath({
 						path: name, title: name, contentType: 'application/pdf', parentItemID: parent.id,
 						saveOptions: { skipNotifier: true }
 					}));
-				}
-			});
+			}
 			Zotero.Reader._annotationFilePollStopping = false;
+			assert.isTrue(items[0].isPDFAttachment());
+			assert.isTrue(items[0].attachmentPath.startsWith(Zotero.Attachments.BASE_PATH_PLACEHOLDER), items[0].attachmentPath);
+			assert.equal(items[0].libraryID, Zotero.Libraries.userLibraryID);
 			for (let mode of ['standard', 'pdf-and-zotero']) {
 				Zotero.Prefs.set('reader.annotations.storageMode', mode);
 				Zotero.Reader._annotationFilePollState.clear();
@@ -145,7 +157,12 @@ runEfficiencyBenchmarks('ZoteroMerge efficiency measurements', function () {
 					Zotero.Reader._annotationFilePollState.set(item.id, { ...token, mode, status: 'reconciled' });
 				}
 				for (let repeat = 0; repeat < 3; repeat++) {
-					await record(`poll-${count}-${mode}-${repeat}`, () => Zotero.Reader._pollLinkedPDFAnnotations());
+					let tokenSpy = sinon.spy(Zotero.Reader, '_getAnnotationFilePollToken');
+					try {
+						await record(`poll-${count}-${mode}-${repeat}`, () => Zotero.Reader._pollLinkedPDFAnnotations());
+						assert.equal(tokenSpy.callCount, count, 'Every linked PDF must be polled');
+					}
+					finally { tokenSpy.restore(); }
 				}
 			}
 		}
