@@ -1049,7 +1049,7 @@ describe("Zotero.CollectionTree", function () {
 		
 		// Simulate a drag over a row and return the resulting dropEffect ('copy', 'move', or
 		// 'none'). Pass { move: true } to simulate the platform's move modifier being held.
-		var dragOver = function (objectType, targetRowID, ids, { move = false } = {}) {
+		var dragOver = function (objectType, targetRowID, ids, { move = false, effectAllowed = 'copyMove' } = {}) {
 			var index = cv.getRowIndexByID(targetRowID);
 			
 			Zotero.DragDrop.currentDragSource = objectType == "item"
@@ -1063,7 +1063,7 @@ describe("Zotero.CollectionTree", function () {
 			};
 			var dataTransfer = {
 				dropEffect: 'copy',
-				effectAllowed: 'copyMove',
+				effectAllowed,
 				types: [`zotero/${objectType}`],
 				getData: function (type) {
 					if (type == `zotero/${objectType}`) {
@@ -1084,6 +1084,7 @@ describe("Zotero.CollectionTree", function () {
 				dataTransfer
 			}, index);
 			Zotero.DragDrop.currentDragSource = null;
+			Zotero.DragDrop.currentDropEffect = null;
 			return dataTransfer.dropEffect;
 		};
 		
@@ -1116,6 +1117,56 @@ describe("Zotero.CollectionTree", function () {
 				var treeRow = itemsView.getRow(0);
 				assert.equal(treeRow.ref.id, item.id);
 			})
+			
+			it("should move an item when the drag only allows copying", async function () {
+				var collection1 = await createDataObject('collection');
+				await select(win, collection1);
+				var collection2 = await createDataObject('collection');
+				var item = await createDataObject('item', { collections: [collection1.id] });
+				
+				var index = cv.getRowIndexByID('C' + collection2.id);
+				var rowEl = {
+					classList: { contains: () => true },
+					getBoundingClientRect: () => ({ y: 0, height: 100 })
+				};
+				var dataTransfer = {
+					dropEffect: 'copy',
+					effectAllowed: 'copy',
+					types: ['zotero/item'],
+					getData: function (type) {
+						if (type == 'zotero/item') {
+							return item.id + "";
+						}
+						return "";
+					},
+					setDragImage: () => {}
+				};
+				Zotero.DragDrop.currentDragSource = zp.itemsView.collectionTreeRows[0];
+				cv.onDragOver({
+					preventDefault: () => {},
+					stopPropagation: () => {},
+					currentTarget: rowEl,
+					target: rowEl,
+					clientY: 50,
+					metaKey: Zotero.isMac,
+					shiftKey: !Zotero.isMac,
+					dataTransfer
+				}, index);
+				// A file attachment drag allows only copying, so the requested move has to be
+				// sent as a copy for the drop to happen
+				assert.equal(dataTransfer.dropEffect, 'copy');
+				
+				var promise = waitForNotifierEvent('add', 'collection-item');
+				await cv.onDrop({
+					persist: () => 0,
+					target: { ownerDocument: { defaultView: win } },
+					dataTransfer
+				}, index);
+				await promise;
+				Zotero.DragDrop.currentDragSource = null;
+				
+				assert.sameMembers(item.getCollections(), [collection2.id]);
+			});
 			
 			it("should move an item from one collection to another", async function () {
 				var collection1 = await createDataObject('collection');
@@ -2010,6 +2061,36 @@ describe("Zotero.CollectionTree", function () {
 			});
 		}
 
+		it('should show and allow selecting a virtual row matching the filter', async function () {
+			await cv.setFilter(Zotero.getString('pane.collections.trash'));
+			
+			let index = cv.getRowIndexByID("T" + userLibraryID);
+			assert.notStrictEqual(index, false);
+			await cv.focusFirstMatchingRow();
+			assert.isTrue(cv.getRow(cv.selection.focused).isTrash());
+		});
+
+		it('should not show a library whose trash is empty and hidden', async function () {
+			Zotero.Prefs.set('showTrashWhenEmpty', false);
+			var group = await createGroup();
+			try {
+				await cv.setFilter(Zotero.getString('pane.collections.trash'));
+				
+				assert.isFalse(cv.getRowIndexByID("L" + group.libraryID));
+			}
+			finally {
+				Zotero.Prefs.clear('showTrashWhenEmpty');
+				await group.eraseTx();
+			}
+		});
+
+		it('should hide a virtual row not matching the filter', async function () {
+			await cv.setFilter("collection");
+			
+			assert.isFalse(cv.getRowIndexByID("T" + userLibraryID));
+			assert.isFalse(cv.getRowIndexByID("U" + userLibraryID));
+		});
+
 		it('should match an accented collection name from an unaccented filter', async function () {
 			var collection = await createDataObject('collection', { name: "zdiacrésumé", libraryID: userLibraryID });
 			await cv.setFilter("zdiacresume");
@@ -2173,4 +2254,53 @@ describe("Zotero.CollectionTree", function () {
 			invalidateSpy.restore();
 		});
 	})
+
+	describe("removed single-selection methods", function () {
+		var buildFlags = ['isBetaBuild', 'isDevBuild', 'isSourceBuild'];
+		var savedBuildFlags;
+		
+		beforeEach(function () {
+			savedBuildFlags = buildFlags.map(flag => Zotero[flag]);
+			// Tests run in a source build, where these methods always throw
+			buildFlags.forEach(flag => Zotero[flag] = false);
+		});
+		
+		afterEach(function () {
+			buildFlags.forEach((flag, i) => Zotero[flag] = savedBuildFlags[i]);
+		});
+		
+		it("should return the selected row when focus is on a different row", async function () {
+			var collection1 = await createDataObject('collection');
+			var collection2 = await createDataObject('collection');
+			var index1 = cv.getRowIndexByID(collection1.treeViewID);
+			var index2 = cv.getRowIndexByID(collection2.treeViewID);
+			
+			cv.selection.select(index1);
+			// Ctrl/Cmd-arrow moves focus without changing the selection
+			cv.selection.focused = index2;
+			
+			assert.equal(cv.getSelectedCollection(), collection1);
+			assert.equal(zp.getSelectedCollection(), collection1);
+			assert.equal(zp.getCollectionTreeRow().ref, collection1);
+		});
+		
+		it("should throw when multiple rows are selected", async function () {
+			var collection1 = await createDataObject('collection');
+			var collection2 = await createDataObject('collection');
+			cv.selection.select(cv.getRowIndexByID(collection1.treeViewID));
+			cv.selection.toggleSelect(cv.getRowIndexByID(collection2.treeViewID));
+			
+			assert.throws(() => cv.getSelectedCollection());
+			assert.throws(() => zp.getSelectedLibraryID());
+		});
+		
+		it("should throw in pre-release builds with a single row selected", async function () {
+			Zotero.isBetaBuild = true;
+			var collection = await createDataObject('collection');
+			cv.selection.select(cv.getRowIndexByID(collection.treeViewID));
+			
+			assert.throws(() => cv.getSelectedCollection());
+			assert.throws(() => zp.getSelectedCollection());
+		});
+	});
 })

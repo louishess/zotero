@@ -137,7 +137,6 @@ pref("extensions.zotero.export.bibliographySettings", "save-as-rtf");
 pref("extensions.zotero.export.displayCharsetOption", true);
 pref("extensions.zotero.export.citePaperJournalArticleURL", false);
 pref("extensions.zotero.cite.automaticJournalAbbreviations", true);
-pref("extensions.zotero.cite.useCiteprocRs", false);
 pref("extensions.zotero.import.createNewCollection.fromFileOpenHandler", true);
 pref("extensions.zotero.rtfScan.lastInputFile", "");
 pref("extensions.zotero.rtfScan.lastOutputFile", "");
@@ -259,6 +258,7 @@ pref("extensions.zotero.reader.autoDisableTool.text", true);
 pref("extensions.zotero.reader.autoDisableTool.image", true);
 pref("extensions.zotero.reader.lastSidebarTab", "annotations");
 pref("extensions.zotero.reader.annotations.storageMode", "standard");
+pref("extensions.zotero.reader.popupPositions", "{}");
 pref("extensions.zotero.reader.readAloud.highlightGranularity", "sentence");
 
 // Set color scheme to auto by default

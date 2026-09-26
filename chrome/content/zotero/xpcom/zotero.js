@@ -669,10 +669,13 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 					throw e;
 				}
 				
-				let stack = e.stack ? Zotero.Utilities.Internal.filterStack(e.stack) : null;
-				Zotero.startupError = Zotero.getString('startupError.databaseUpgradeError')
-					+ "\n\n"
-					+ (stack || e);
+				// Report the error unless corruption recovery has already started a quit
+				// or restart
+				if (!Zotero.skipLoading) {
+					Zotero.startupError = Zotero.getString('startupError.databaseUpgradeError')
+						+ "\n\n"
+						+ _formatStartupError(e);
+				}
 				throw e;
 			}
 			finally {
@@ -850,10 +853,12 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 		}
 		catch (e) {
 			Zotero.logError(e);
-			if (!Zotero.startupError) {
+			// Report a generic error unless a more specific one was set above or corruption
+			// recovery has already started a quit or restart
+			if (!Zotero.startupError && !Zotero.skipLoading) {
 				Zotero.startupError = Zotero.getString('startupError', Zotero.appName) + "\n\n"
 					+ Zotero.getString('db.integrityCheck.reportInForums') + "\n\n"
-					+ e.message ? (e.message + "\n\n" + e.stack) : e;
+					+ _formatStartupError(e);
 			}
 			return false;
 		}
@@ -879,6 +884,11 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 			// Test write access on Zotero database
 			else if (!Zotero.File.pathToFile(dbfile).isWritable()) {
 				var msg = 'Cannot write to ' + dbfile;
+			}
+			// Shouldn't be reached, since the checks above should catch anything SQLite refuses
+			// to write to, but don't continue with a connection that couldn't be configured
+			else if (Zotero.DB.readOnly) {
+				var msg = dbfile + ' was opened read-only';
 			}
 			else {
 				var msg = false;
@@ -906,10 +916,9 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 				Zotero.startupError = Zotero.getString('startupError.databaseInUse');
 			}
 			else {
-				let stack = e.stack ? Zotero.Utilities.Internal.filterStack(e.stack) : null;
 				Zotero.startupError = Zotero.getString('startupError', Zotero.appName) + "\n\n"
 					+ Zotero.getString('db.integrityCheck.reportInForums') + "\n\n"
-					+ (stack || e);
+					+ _formatStartupError(e);
 			}
 			
 			Zotero.debug(e.toString(), 1);
@@ -920,6 +929,20 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 		
 		return true;
 	};
+	
+	
+	/**
+	 * Format an error for a startup error message
+	 *
+	 * SpiderMonkey stacks contain only frames, so the message has to be included with them.
+	 *
+	 * @param {Error|*} e
+	 * @return {String|*}
+	 */
+	function _formatStartupError(e) {
+		var stack = e.stack ? Zotero.Utilities.Internal.filterStack(e.stack) : null;
+		return [e.message, stack].filter(x => x).join("\n\n") || e;
+	}
 	
 	
 	function _checkDataDirAccessError(e) {
@@ -1237,7 +1260,10 @@ const { CommandLineOptions } = ChromeUtils.importESModule("chrome://zotero/conte
 					Zotero.Utilities.Internal.Environment.clearMozillaVariables();
 				}
 				
-				svc.loadURI(Services.io.newURI(url, null, null));
+				svc.loadURI(
+					Services.io.newURI(url, null, null),
+					Services.scriptSecurityManager.getSystemPrincipal(),
+				);
 				return;
 			}
 		}
@@ -2315,6 +2341,9 @@ Zotero.VersionHeader = {
 Zotero.DragDrop = {
 	currentEvent: null,
 	currentOrientation: 0,
+	// The effect set by the tree's last onDragOver() via LibraryTreeView::setDropEffect(), which
+	// can differ from the drop event's dropEffect
+	currentDropEffect: null,
 	
 	getDataFromDataTransfer: function (dataTransfer, firstOnly) {
 		var dt = dataTransfer;

@@ -38,6 +38,45 @@ describe("Zotero.Cite", function () {
 		});
 	});
 	
+	describe("Dates", function () {
+		async function makeBibliography(fields) {
+			let item = new Zotero.Item;
+			item.fromJSON(Object.assign({
+				itemType: "book",
+				title: "Test Book"
+			}, fields));
+			await item.saveTx();
+
+			let style = Zotero.Styles.get('http://www.zotero.org/styles/chicago-notes-bibliography');
+			let cslEngine = style.getCiteProc('en-US');
+			return Zotero.Cite.makeFormattedBibliographyOrCitationList(cslEngine, [item], "text");
+		}
+
+		it("should render a date range", async function () {
+			assert.include(await makeBibliography({ date: '2021/2026' }), '2021–2026');
+		});
+
+		it("should render a BCE date", async function () {
+			assert.match(await makeBibliography({ date: '-429' }), /429\s?BC/);
+		});
+
+		it("should render a spelled-out BCE date", async function () {
+			let output = await makeBibliography({ date: 'January 10, 200 BCE' });
+			assert.match(output, /200\s?BC/);
+			assert.notMatch(output, /\bAD\b/);
+		});
+
+		it("should render an EDTF range in Extra, overriding the Date field", async function () {
+			let output = await makeBibliography({ date: '1999', extra: 'issued: 2021/2026' });
+			assert.include(output, '2021–2026');
+			assert.notInclude(output, '1999');
+		});
+
+		it("should render a quoted date as a literal string", async function () {
+			assert.include(await makeBibliography({ date: '"1637 and 1662"' }), '1637 and 1662');
+		});
+	});
+
 	describe("#retrieveLocale()", function () {
 		it("should handle locale with script code", async function () {
 			var item = new Zotero.Item;
@@ -123,9 +162,6 @@ describe("Zotero.Cite", function () {
 	
 	describe("previewCitationCluster()", function () {
 		before(async function () {
-			if (Zotero.Prefs.get('cite.useCiteprocRs')) {
-				this.skip();
-			}
 			await Zotero.Styles.init();
 			await Zotero.Styles.install(
 				{ file: OS.Path.join(getTestDataDirectory().path, 'apa.csl') },
@@ -176,7 +212,6 @@ describe("Zotero.Cite", function () {
 				);
 			});
 			assertStateRestored(cslEngine, item);
-			cslEngine.free();
 		});
 		
 		it("shouldn't modify processor state if rendering fails", async function () {
@@ -191,7 +226,6 @@ describe("Zotero.Cite", function () {
 			});
 			stub.restore();
 			assertStateRestored(cslEngine, item);
-			cslEngine.free();
 		});
 	});
 	

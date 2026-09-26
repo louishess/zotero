@@ -1145,6 +1145,7 @@ var ItemTree = class ItemTree extends LibraryTree {
 		for (let id of this._prefsObserverIDs) {
 			Zotero.Prefs.unregisterObserver(id);
 		}
+		this.clearEventListeners();
 		this._writeColumnPrefsToFile(true);
 	}
 
@@ -2249,6 +2250,17 @@ var ItemTree = class ItemTree extends LibraryTree {
 			div.classList.remove('tight');
 		}
 		
+		let { firstColumn } = columns.reduce((acc, column) => {
+			return !column.hidden && column.ordinal < acc.lowestOrdinal
+				? { lowestOrdinal: column.ordinal, firstColumn: column }
+				: acc;
+		}, { lowestOrdinal: Infinity, firstColumn: null });
+
+		this._renderCtx.firstColumn = firstColumn;
+		this._renderCtx.includeTrashed = this.rowProvider.includeTrashed;
+
+		row.renderRow(div, index, columns, rowData, this._renderCtx);
+		
 		if (this._dropRow == index) {
 			let span;
 			if (Zotero.DragDrop.currentOrientation != 0) {
@@ -2260,17 +2272,6 @@ var ItemTree = class ItemTree extends LibraryTree {
 				div.classList.add('drop');
 			}
 		}
-
-		let { firstColumn } = columns.reduce((acc, column) => {
-			return !column.hidden && column.ordinal < acc.lowestOrdinal
-				? { lowestOrdinal: column.ordinal, firstColumn: column }
-				: acc;
-		}, { lowestOrdinal: Infinity, firstColumn: null });
-
-		this._renderCtx.firstColumn = firstColumn;
-		this._renderCtx.includeTrashed = this.rowProvider.includeTrashed;
-
-		row.renderRow(div, index, columns, rowData, this._renderCtx);
 
 		if (!oldDiv) {
 			if (this.props.dragAndDrop && row.isDraggable) {
@@ -2403,8 +2404,8 @@ var ItemTree = class ItemTree extends LibraryTree {
 		row.numNotes = treeRow.numNotes() || "";
 		row.feed = (treeRow.ref.isFeedItem && Zotero.Feeds.get(treeRow.ref.libraryID).name) || "";
 		row.lastRead = row.isItem ? treeRow.ref.getItemLastRead() : "";
-		row.addedBy = row.isItem && treeRow.getAddedBy();
-		row.lastModifiedBy = row.isItem && treeRow.getLastModifiedBy();
+		row.addedBy = row.isItem ? treeRow.getAddedBy() : "";
+		row.lastModifiedBy = row.isItem ? treeRow.getLastModifiedBy() : "";
 		row.title = treeRow.getDisplayTitle();
 		
 		const columns = this.getColumns();

@@ -37,6 +37,7 @@ Zotero.DBConnection = function (dbNameOrPath) {
 	}
 	
 	this.MAX_BOUND_PARAMETERS = 999;
+	this.IDLE_OBSERVER_SECONDS = 300;
 	this.DB_CORRUPTION_STRINGS = [
 		"database disk image is malformed",
 		"2152857611"
@@ -87,13 +88,10 @@ Zotero.DBConnection = function (dbNameOrPath) {
 		this._dbPath = Zotero.DataDirectory.getDatabase(dbNameOrPath);
 		this._externalDB = false;
 	}
-	this._shutdown = false;
 	this._connection = null;
 	this._transactionID = null;
 	this._transactionDate = null;
 	this._lastTransactionDate = null;
-	this._transactionRollback = false;
-	this._transactionNestingLevel = 0;
 	this._commitCount = 0;
 	this._callbacks = {
 		begin: [],
@@ -105,6 +103,8 @@ Zotero.DBConnection = function (dbNameOrPath) {
 		}
 	};
 	this._dbIsCorrupt = null
+	// Set when SQLite opens the database read-only, which blocks every write
+	this.readOnly = false;
 	this._checkingCorruption = false;
 	this._handlingCorruption = false;
 	this._corruptionHandlers = [];
@@ -288,6 +288,19 @@ Zotero.DBConnection.prototype.addCallback = function (type, cb) {
 }
 
 
+/**
+ * Add a callback to run when the current transaction is committed or rolled back
+ *
+ * A rollback reverts the database but not JS state, and a transaction can contain many
+ * objects' saves (e.g., sync download batches), so one object's failure rolls back other
+ * objects' already-completed side effects. In-memory state (caches, properties of cached
+ * data objects) must therefore either be updated only in a 'commit' callback or restored
+ * to its previous state in a 'rollback' callback.
+ *
+ * @param {String} type - 'commit' or 'rollback'
+ * @param {Function} cb - Called with the transaction id after the transaction is
+ *     committed or rolled back
+ */
 Zotero.DBConnection.prototype.addCurrentCallback = function (type, cb) {
 	this.requireTransaction();
 	this._callbacks.current[type].push(cb);
@@ -306,25 +319,6 @@ Zotero.DBConnection.prototype.removeCallback = function (type, id) {
 	}
 	
 	delete this._callbacks[type][id];
-}
-
-
-/*
- * Used on shutdown to rollback all open transactions
- *
- * TODO: update or remove
- */
-Zotero.DBConnection.prototype.rollbackAllTransactions = function () {
-	if (this.transactionInProgress()) {
-		var level = this._transactionNestingLevel;
-		this._transactionNestingLevel = 0;
-		try {
-			this.rollbackTransaction();
-		}
-		catch (e) {}
-		return level ? level : true;
-	}
-	return false;
 }
 
 
@@ -426,6 +420,10 @@ Zotero.DBConnection.prototype.getNextName = async function (libraryID, table, fi
 // });
 //
 /**
+ * In-memory state (caches, properties of cached data objects) modified within the
+ * transaction must be updated in a commit callback or restored in a rollback callback so
+ * that it doesn't reflect rolled-back changes -- see addCurrentCallback()
+ *
  * @param {Function} func - Async function containing `await Zotero.DB.queryAsync()` and similar
  * @param {Object} [options]
  * @param {Boolean} [options.disableForeignKeys] - Disable foreign key checks before the
@@ -439,6 +437,7 @@ Zotero.DBConnection.prototype.executeTransaction = async function (func, options
 	var resolve;
 	
 	var startedTransaction = false;
+	var committed = false;
 	var id = Zotero.Utilities.randomString();
 	
 	try {
@@ -488,6 +487,7 @@ Zotero.DBConnection.prototype.executeTransaction = async function (func, options
 			}
 			
 			result = await conn.executeTransaction(func);
+			committed = true;
 			this._commitCount++;
 			Zotero.debug(`Committed DB transaction ${id}`, 4);
 		}
@@ -516,15 +516,28 @@ Zotero.DBConnection.prototype.executeTransaction = async function (func, options
 		this._callbacks.current.rollback = [];
 		
 		// Run temporary commit callbacks
+		//
+		// The transaction is already committed, so errors in commit callbacks are logged
+		// rather than being treated as transaction failures
 		var f;
 		while (f = this._callbacks.current.commit.shift()) {
-			await Promise.resolve(f(id));
+			try {
+				await Promise.resolve(f(id));
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
 		}
 		
 		// Run commit callbacks
 		for (var i=0; i<this._callbacks.commit.length; i++) {
 			if (this._callbacks.commit[i]) {
-				await this._callbacks.commit[i](id);
+				try {
+					await this._callbacks.commit[i](id);
+				}
+				catch (e) {
+					Zotero.logError(e);
+				}
 			}
 		}
 		
@@ -534,6 +547,10 @@ Zotero.DBConnection.prototype.executeTransaction = async function (func, options
 		if (e instanceof Zotero.DBConnection.TimeoutError) {
 			Zotero.debug(`Timed out waiting for transaction ${id}`, 1);
 		}
+		else if (committed) {
+			Zotero.debug(`Error after committing DB transaction ${id}`, 1);
+			Zotero.debug(e.message, 1);
+		}
 		else {
 			Zotero.debug(`Rolled back DB transaction ${id}`, 1);
 			Zotero.debug(e.message, 1);
@@ -542,7 +559,25 @@ Zotero.DBConnection.prototype.executeTransaction = async function (func, options
 			this._transactionID = null;
 		}
 		
-		// Function to run once transaction has been committed but before any
+		// A corruption error from the transaction's own BEGIN or COMMIT is thrown by mozStorage
+		// instead of by one of our query methods, so it hasn't been checked yet
+		if (!e?.corruptionChecked) {
+			await this._checkException(e);
+		}
+		
+		// If the transaction was committed before the error, don't run rollback
+		// callbacks, since the data was saved
+		if (committed) {
+			e.committed = true;
+			this._callbacks.current.commit = [];
+			this._callbacks.current.rollback = [];
+			throw e;
+		}
+		
+		// Discard commit callbacks from the rolled-back transaction
+		this._callbacks.current.commit = [];
+		
+		// Function to run once transaction has been rolled back but before any
 		// permanent callbacks
 		if (options.onRollback) {
 			this._callbacks.current.rollback.push(options.onRollback);
@@ -698,7 +733,7 @@ Zotero.DBConnection.prototype.queryAsync = async function (sql, params, options 
 		if (e.errors && e.errors[0]) {
 			var eStr = e + "";
 			eStr = eStr.indexOf("Error: ") == 0 ? eStr.substr(7): e;
-			throw new Error(eStr + ' [QUERY: ' + sql + '] '
+			let newError = new Error(eStr + ' [QUERY: ' + sql + '] '
 				+ (params
 					? '[PARAMS: '
 						+ (Array.isArray(params)
@@ -707,6 +742,8 @@ Zotero.DBConnection.prototype.queryAsync = async function (sql, params, options 
 						) + '] '
 					: '')
 				+ '[ERROR: ' + e.errors[0].message + ']');
+			newError.corruptionChecked = e.corruptionChecked;
+			throw newError;
 		}
 		else {
 			throw e;
@@ -1121,6 +1158,14 @@ Zotero.DBConnection.prototype.isCorruptionError = function (e) {
 
 
 /**
+ * Check for SQLite's read-only-database error
+ */
+Zotero.DBConnection.prototype.isReadOnlyError = function (e) {
+	return !!e.message?.includes('attempt to write a readonly database');
+};
+
+
+/**
  * Register a callback to run when a corruption error occurs but the main database checks out,
  * meaning an attached database (e.g., the rebuildable full-text index) is corrupt. The callback
  * can rebuild it. Run deferred, after the failing operation unwinds.
@@ -1182,6 +1227,13 @@ Zotero.DBConnection.prototype.closeDatabase = async function (permanent) {
 		this._connection = undefined;
 		this._connection = permanent ? false : null;
 		Zotero.debug("Database closed");
+	}
+	
+	if (permanent && this._idleObserverRegistered) {
+		this._idleObserverRegistered = false;
+		Components.classes["@mozilla.org/widget/useridleservice;1"]
+			.getService(Components.interfaces.nsIUserIdleService)
+			.removeIdleObserver(this, this.IDLE_OBSERVER_SECONDS);
 	}
 };
 
@@ -1263,6 +1315,18 @@ Zotero.DBConnection.prototype.backUpDatabase = async function ({ force, suffix, 
 		online = false;
 	}
 
+	// On Linux, use an offline backup on a network filesystem. The online backup API writes
+	// the backup file through SQLite's default VFS, whose locking can hang there -- its lock
+	// upgrades conflict with the SMB byte-range lock mapping on CIFS mounts. Check the
+	// directory rather than the database file, which could be a symlink to another volume,
+	// since the directory is where the backup files are written.
+	if (online && Zotero.isLinux
+			&& ['cifs', 'smb', 'smb2', 'nfs'].includes(
+				Zotero.File.getFileSystemInfo(PathUtils.parent(this._dbPath))?.fsType
+			)) {
+		online = false;
+	}
+
 	var resolveOfflineBackupPromise;
 	var success = false;
 	if (online) {
@@ -1290,7 +1354,10 @@ Zotero.DBConnection.prototype.backUpDatabase = async function ({ force, suffix, 
 			if (await OS.File.exists(backupFile)) {
 				let currentDBTime = (await OS.File.stat(file)).lastModificationDate;
 				let lastBackupTime = (await OS.File.stat(backupFile)).lastModificationDate;
-				if (currentDBTime == lastBackupTime) {
+				// In WAL mode the database file's mtime advances only when the WAL is
+				// checkpointed, so changes still in the WAL leave it matching the backup
+				if (currentDBTime.getTime() == lastBackupTime.getTime()
+						&& !(await this._hasWALContents(file))) {
 					Zotero.debug("Database '" + this._dbName + "' hasn't changed -- skipping backup");
 					return false;
 				}
@@ -1477,8 +1544,22 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
 		throw new Error("Database permanently closed; not re-opening");
 	}
 	
+	// Opening is asynchronous, so callers arriving while it's under way share the same attempt
+	if (!this._openPromise) {
+		this._openPromise = this._openConnectionAsync()
+			.finally(() => {
+				this._openPromise = null;
+			});
+	}
+	return this._openPromise;
+};
+
+
+Zotero.DBConnection.prototype._openConnectionAsync = async function () {
 	this._debug("Asynchronously opening database '" + this._dbName + "'");
 	Zotero.debug(this._dbPath);
+	
+	this.readOnly = false;
 	
 	// Get the storage service
 	var store = Services.storage;
@@ -1487,13 +1568,14 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
 	var corruptMarker = this._dbPath + '.is.corrupt';
 	
 	var uncleanShutdown = false;
+	var useWAL = true;
 	if (!this._externalDB) {
 		// If a verified copy of the database file was saved before a restart due to stale
 		// journal files, swap it in. A failure aborts startup, since opening the database
 		// with a pending repair still on disk could let the older copy overwrite newer data
 		// at a later startup.
 		await this._applyPendingRepair();
-		
+	
 		// A non-empty WAL file means the last session didn't close cleanly, since the WAL
 		// is truncated at shutdown
 		try {
@@ -1504,20 +1586,32 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
 				throw e;
 			}
 		}
+	
+		useWAL = await this._canUseWAL(file);
 	}
 	
 	try {
 		if (await OS.File.exists(corruptMarker)) {
 			throw new Error(this.DB_CORRUPTION_STRINGS[0]);
 		}
-		// Open without an exclusive lock at the OS level so the database can be opened on network
-		// filesystems (e.g., SMB shares), where acquiring the exclusive open lock fails with an I/O
-		// error. We still set locking_mode=EXCLUSIVE below, which gives us a connection-lifetime
-		// SQLite lock (preventing undetected concurrent writes) and keeps the WAL index in heap
-		// memory, avoiding the -shm file that can't be created on a network filesystem. See #4860.
+		// A database in WAL mode on a filesystem that can't use WAL has to be converted
+		// before it's opened, since just opening it crashes -- see _canUseWAL(). A corruption
+		// error from the conversion goes through the same recovery as one from the open.
+		if (!this._externalDB && !useWAL) {
+			await this._downgradeDatabaseFromWAL(file);
+		}
+		// On macOS, open without an exclusive lock at the OS level so the database can be opened
+		// on network filesystems (e.g., SMB shares), where acquiring the exclusive open lock
+		// fails with an I/O error. We still set locking_mode=EXCLUSIVE below, which gives us a
+		// connection-lifetime SQLite lock preventing undetected concurrent writes. See #4860.
+		//
+		// On other platforms, keep the default exclusive open, which performs all locking under
+		// a single held lock -- avoiding SQLite's lock-upgrade sequence, which fails on some
+		// network filesystems (e.g., Linux CIFS mounts) -- and keeps the WAL index in heap
+		// memory, so no -shm file is created.
 		this._connection = await Promise.resolve(this.Sqlite.openConnection({
 			path: file,
-			openNotExclusive: true
+			openNotExclusive: Zotero.isMac
 		}));
 	}
 	catch (e) {
@@ -1548,13 +1642,27 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
 			await this.queryAsync("PRAGMA main.locking_mode=NORMAL");
 		}
 
-		// Enable WAL mode for better write performance. With locking_mode=EXCLUSIVE
-		// set first, SQLite uses heap memory for the WAL index instead of shared
-		// memory, so no -shm file is created on disk.
-		await this.queryAsync("PRAGMA journal_mode=WAL");
-		// NORMAL synchronous is safe with WAL -- only risks losing the last
-		// transaction on power loss, not corruption
-		await this.queryAsync("PRAGMA synchronous=NORMAL");
+		if (useWAL) {
+			try {
+				// Enable WAL mode for better write performance
+				await this.queryAsync("PRAGMA journal_mode=WAL");
+				// NORMAL synchronous is safe with WAL -- only risks losing the last
+				// transaction on power loss, not corruption
+				await this.queryAsync("PRAGMA synchronous=NORMAL");
+			}
+			catch (e) {
+				// Setting the journal mode is the first write to the database, so it fails
+				// when the database file or its directory isn't writable. Let the connection
+				// open in whatever journal mode the database is already in, so that startup can
+				// fail with a message about permissions instead of this error, and flag it so
+				// that startup fails even if its write-access checks pass.
+				if (!this.isReadOnlyError(e)) {
+					throw e;
+				}
+				this.readOnly = true;
+				Zotero.logError(e);
+			}
+		}
 
 		// Set page cache size to 8MB
 		let pageSize = await this.valueQueryAsync("PRAGMA page_size");
@@ -1596,12 +1704,20 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
 		}
 		
 		// Register idle observer for DB backup
-		Zotero.Schema.schemaUpdatePromise.then(() => {
-			Zotero.debug("Initializing DB backup idle observer");
-			var idleService = Components.classes["@mozilla.org/widget/useridleservice;1"]
-				.getService(Components.interfaces.nsIUserIdleService);
-			idleService.addIdleObserver(this, 300);
-		});
+		if (!this._idleObserverScheduled) {
+			this._idleObserverScheduled = true;
+			Zotero.Schema.schemaUpdatePromise.then(() => {
+				// The database can be closed permanently while this is pending
+				if (this._connection === false) {
+					return;
+				}
+				Zotero.debug("Initializing DB backup idle observer");
+				var idleService = Components.classes["@mozilla.org/widget/useridleservice;1"]
+					.getService(Components.interfaces.nsIUserIdleService);
+				idleService.addIdleObserver(this, this.IDLE_OBSERVER_SECONDS);
+				this._idleObserverRegistered = true;
+			});
+		}
 	}
 
 	// Re-load any extensions loaded via loadExtension(), which are registered per connection and
@@ -1630,6 +1746,209 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
 
 
 /**
+ * Check whether the database's WAL file contains data not yet in the database file
+ *
+ * @param {String} file - Path to the database file
+ * @return {Promise<Boolean>}
+ */
+Zotero.DBConnection.prototype._hasWALContents = async function (file) {
+	try {
+		return (await IOUtils.stat(file + '-wal')).size > 0;
+	}
+	catch (e) {
+		if (e.name != 'NotFoundError') {
+			throw e;
+		}
+		return false;
+	}
+};
+
+
+/**
+ * Determine whether the database file can use WAL journal mode
+ *
+ * WAL requires SQLite's shared-memory support. On macOS, SQLite chooses its locking methods
+ * based on the filesystem containing the database, and network filesystems (e.g., SMB, NFS,
+ * WebDAV), read-only volumes, and filesystems without byte-range locking get methods without
+ * shared-memory support. Opening a WAL database with those crashes, because Mozilla's VFS
+ * wrapper hides the missing shared-memory methods from SQLite's WAL support check, so mirror
+ * SQLite's selection logic and allow WAL only when it would select methods with shared-memory
+ * support.
+ *
+ * @param {String} file - Path to the database file
+ * @return {Promise<Boolean>}
+ */
+Zotero.DBConnection.prototype._canUseWAL = async function (file) {
+	if (!Zotero.isMac) {
+		return true;
+	}
+	let info = Zotero.File.getFileSystemInfo(file);
+	if (!info) {
+		return false;
+	}
+	Zotero.debug(`Database is on ${info.fsType} filesystem`);
+	// Filesystems that SQLite maps by name to locking methods without shared-memory support,
+	// plus read-only volumes, which get no-op locking
+	if (['afpfs', 'smbfs', 'webdav', 'nfs'].includes(info.fsType) || info.readOnly) {
+		return false;
+	}
+	// For other filesystems, SQLite probes byte-range locking support and falls back to
+	// dot-file locking without shared-memory support if it's missing
+	return Zotero.File.supportsByteRangeLocks(file);
+};
+
+
+/**
+ * Convert a database in WAL mode back to a rollback journal
+ *
+ * If the WAL file is missing or empty, revert the format versions in the database header
+ * directly. Otherwise replay the WAL by converting a temporary copy of the database on
+ * local disk and swapping it in after it passes an integrity check. If the converted copy
+ * fails the check -- e.g., because the WAL is stale and doesn't belong to the database
+ * file -- but the database file is valid on its own, discard the WAL instead. The original
+ * files aren't modified until a validated replacement is in place.
+ *
+ * A WAL file next to a database whose header already has the rollback format versions --
+ * e.g., from a conversion interrupted between the swap and the WAL removal, or a database
+ * file manually restored from a backup with a stale WAL left in place -- goes through the
+ * same conversion, since SQLite applies a WAL file based on its presence alone.
+ *
+ * @param {String} file - Path to the database file
+ * @return {Promise<Boolean>} - True if the database was converted
+ */
+Zotero.DBConnection.prototype._downgradeDatabaseFromWAL = async function (file) {
+	// SQLite canonicalizes the database path, so the journal files of a symlinked database
+	// sit next to the symlink's target, and the target is what has to be converted
+	try {
+		let nsFile = Zotero.File.pathToFile(file);
+		nsFile.normalize();
+		file = nsFile.path;
+	}
+	catch (e) {
+		// Leave the path as is if it can't be resolved (e.g., the file doesn't exist)
+	}
+	
+	let header;
+	try {
+		header = await IOUtils.read(file, { maxBytes: 20 });
+	}
+	catch (e) {
+		if (e.name == 'NotFoundError') {
+			return false;
+		}
+		throw e;
+	}
+	// Bytes 18 and 19 are the write and read format versions -- 2 means WAL
+	let isWALHeader = header.length >= 20 && header[18] == 2;
+	
+	let walSize = null;
+	try {
+		walSize = (await IOUtils.stat(file + '-wal')).size;
+	}
+	catch (e) {
+		if (e.name != 'NotFoundError') {
+			throw e;
+		}
+	}
+	
+	if (!isWALHeader && walSize === null) {
+		return false;
+	}
+	
+	Zotero.debug(isWALHeader
+		? "Database is in WAL mode -- converting to rollback journal"
+		: "Database has a leftover WAL file -- applying and removing it");
+	
+	if (walSize > 0) {
+		let tempFile = PathUtils.join(
+			PathUtils.tempDir, `zotero.${Zotero.Utilities.randomString()}.sqlite`
+		);
+		let swapFile = file + '.convert-tmp';
+		try {
+			await IOUtils.copy(file, tempFile);
+			await IOUtils.copy(file + '-wal', tempFile + '-wal');
+			// Only a corruption error marks the copy as invalid -- operational errors
+			// (I/O, permissions) propagate
+			let valid = false;
+			try {
+				let conn = await this.Sqlite.openConnection({ path: tempFile });
+				try {
+					await conn.execute("PRAGMA journal_mode=DELETE");
+				}
+				finally {
+					await conn.close();
+				}
+				valid = await this._integrityCheckFile(tempFile);
+			}
+			catch (e) {
+				if (!this.isCorruptionError(e)) {
+					throw e;
+				}
+				Zotero.logError(e);
+			}
+			if (!valid) {
+				// The WAL might be stale and not belong to the database file, so check
+				// whether the database file is valid on its own, and if so discard the WAL
+				Zotero.warn("Converted database failed integrity check "
+					+ "-- checking database file without WAL");
+				await IOUtils.remove(tempFile, { ignoreAbsent: true });
+				await IOUtils.remove(tempFile + '-wal', { ignoreAbsent: true });
+				await IOUtils.copy(file, tempFile);
+				await this._revertWALHeader(tempFile);
+				try {
+					valid = await this._integrityCheckFile(tempFile);
+				}
+				catch (e) {
+					if (!this.isCorruptionError(e)) {
+						throw e;
+					}
+					Zotero.logError(e);
+				}
+				if (!valid) {
+					throw new Error(this.DB_CORRUPTION_STRINGS[0]);
+				}
+				Zotero.warn("Database file is valid without WAL -- discarding WAL");
+			}
+			// Copy next to the original before replacing it so that the swap is atomic
+			await IOUtils.copy(tempFile, swapFile);
+			await IOUtils.move(swapFile, file);
+		}
+		finally {
+			await IOUtils.remove(tempFile, { ignoreAbsent: true });
+			await IOUtils.remove(tempFile + '-wal', { ignoreAbsent: true });
+			await IOUtils.remove(swapFile, { ignoreAbsent: true });
+		}
+	}
+	else if (isWALHeader) {
+		await this._revertWALHeader(file);
+	}
+	
+	await IOUtils.remove(file + '-wal', { ignoreAbsent: true });
+	await IOUtils.remove(file + '-shm', { ignoreAbsent: true });
+	return true;
+};
+
+
+/**
+ * Set the write and read format versions in a database file's header to 1 (rollback journal)
+ */
+Zotero.DBConnection.prototype._revertWALHeader = async function (file) {
+	let stream = Components.classes["@mozilla.org/network/file-output-stream;1"]
+		.createInstance(Components.interfaces.nsIFileOutputStream);
+	// PR_WRONLY, no truncation
+	stream.init(Zotero.File.pathToFile(file), 0x02, 0o644, 0);
+	try {
+		stream.QueryInterface(Components.interfaces.nsISeekableStream)
+			.seek(Components.interfaces.nsISeekableStream.NS_SEEK_SET, 18);
+		stream.write("\x01\x01", 2);
+	}
+	finally {
+		stream.close();
+	}
+};
+
+
+/**
  * @param {Error} e
  * @param {Object} [options]
  * @param {Boolean} [options.mainConfirmedCorrupt] - Skip the attached-database check because
@@ -1637,6 +1956,11 @@ Zotero.DBConnection.prototype._getConnectionAsync = async function () {
  *     check, which detects index inconsistencies that quick_check misses)
  */
 Zotero.DBConnection.prototype._checkException = async function (e, { mainConfirmedCorrupt } = {}) {
+	// Flag the error so that it isn't checked again as it propagates
+	if (e && typeof e == 'object') {
+		e.corruptionChecked = true;
+	}
+	
 	if (this._externalDB || !this.isCorruptionError(e) || this._checkingCorruption
 			|| this._handlingCorruption) {
 		return true;
@@ -1939,7 +2263,7 @@ Zotero.DBConnection.prototype._journalFilesExist = async function () {
  * @return {Boolean}
  */
 Zotero.DBConnection.prototype._integrityCheckFile = async function (path, quick) {
-	var connection = await this.Sqlite.openConnection({ path });
+	var connection = await this.Sqlite.openConnection({ path, openNotExclusive: Zotero.isMac });
 	var ok;
 	try {
 		try {
@@ -1985,7 +2309,7 @@ Zotero.DBConnection.prototype._reindexToCopy = async function (path) {
 		await Zotero.File.copyFile(path, tmpFile);
 		this._debug(`Rebuilding indexes of '${PathUtils.filename(tmpFile)}'`, 1);
 		this._showProgressText('db-repairing');
-		let connection = await this.Sqlite.openConnection({ path: tmpFile });
+		let connection = await this.Sqlite.openConnection({ path: tmpFile, openNotExclusive: Zotero.isMac });
 		try {
 			try {
 				await connection.execute("REINDEX");
@@ -2151,7 +2475,8 @@ Zotero.DBConnection.prototype._handleCorruptionMarker = async function () {
 	// keep it and skip the backup restore
 	if (await this._recoverFromStaleJournalFiles()) {
 		this._connection = await Promise.resolve(this.Sqlite.openConnection({
-			path: file
+			path: file,
+			openNotExclusive: Zotero.isMac
 		}));
 		this._debug('Database recovered from stale journal files', 1);
 		if (await OS.File.exists(corruptMarker)) {
@@ -2186,7 +2511,8 @@ Zotero.DBConnection.prototype._handleCorruptionMarker = async function () {
 		
 		// Create new main database
 		this._connection = await Promise.resolve(this.Sqlite.openConnection({
-			path: file
+			path: file,
+			openNotExclusive: Zotero.isMac
 		}));
 		
 		if (await OS.File.exists(corruptMarker)) {
@@ -2251,7 +2577,8 @@ Zotero.DBConnection.prototype._handleCorruptionMarker = async function () {
 		
 		// Create new main database
 		this._connection = await Promise.resolve(this.Sqlite.openConnection({
-			path: file
+			path: file,
+			openNotExclusive: Zotero.isMac
 		}));
 		
 		Zotero.alert(
@@ -2297,7 +2624,8 @@ Zotero.DBConnection.prototype._handleCorruptionMarker = async function () {
 	
 	// Open restored database
 	this._connection = await Promise.resolve(this.Sqlite.openConnection({
-		path: file
+		path: file,
+		openNotExclusive: Zotero.isMac
 	}));
 	this._debug('Database restored', 1);
 	let backupDate = '';

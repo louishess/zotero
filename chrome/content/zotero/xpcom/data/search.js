@@ -143,6 +143,7 @@ Zotero.Search.prototype.loadFromRow = function (row) {
 		
 		// Integer or 0
 		case 'version':
+		case 'clientVersion':
 			val = val ? parseInt(val) : 0;
 			break;
 		
@@ -1738,10 +1739,15 @@ Zotero.Search.prototype._buildQuery = async function () {
 					//
 					// Note: We assume full datetimes are already UTC and don't
 					// need to be handled specially
+					//
+					// Text operators on a date field compare the stored value
+					// like any other field, so they skip this
 					else if ((condition.name == 'dateAdded'
 							|| condition.name == 'dateModified'
 							|| condition.name == 'lastRead'
 							|| condition.name == 'datefield')
+							&& ['is', 'isNot', 'isBefore', 'isAfter', 'isInTheLast']
+								.includes(condition.operator)
 							&& !Zotero.Date.isSQLDateTime(condition.value)) {
 						
 						// TODO: document these flags
@@ -1843,9 +1849,11 @@ Zotero.Search.prototype._buildQuery = async function () {
 										break;
 									
 									case 'isBefore':
+										// A date without a sortable year is stored
+										// as 0000-..., which isn't before anything
 										condSQL += '<?';
-										condSQL += ' AND ' + condition['field'] +
-											">'0000-00-00'";
+										condSQL += ' AND SUBSTR(' + condition['field']
+											+ ", 1, 10)>'0000-00-00'";
 										break;
 										
 									case 'isAfter':
@@ -2293,15 +2301,23 @@ Zotero.Search._closestRelatedLevel = function (levels, toLevel) {
  * definition can set `level` explicitly; otherwise it defaults to the top-level item, except
  * for the few itemData fields that attachments also have (title, url, accessDate per the
  * schema), which match at either the item or the attachment level.
+ *
+ * A condition that stands in for a whole set of fields -- the generic 'field' condition that
+ * 'Any Field' expands to -- is matched against every field in the set, so it matches wherever
+ * any one of them lives.
  */
 Zotero.Search._conditionLevel = function (name, conditionData) {
 	if (conditionData.level) {
 		return conditionData.level;
 	}
 	if (conditionData.table == 'itemData') {
-		let fieldID = Zotero.ItemFields.getID(name);
-		if (fieldID
-				&& Zotero.ItemFields.isValidForType(fieldID, Zotero.ItemTypes.getID('attachment'))) {
+		let fields = (name == conditionData.name ? conditionData.aliases : null) || [name];
+		let attachmentTypeID = Zotero.ItemTypes.getID('attachment');
+		let onAttachment = fields.some((field) => {
+			let fieldID = Zotero.ItemFields.getID(field);
+			return fieldID && Zotero.ItemFields.isValidForType(fieldID, attachmentTypeID);
+		});
+		if (onAttachment) {
 			return ['item', 'attachment'];
 		}
 	}

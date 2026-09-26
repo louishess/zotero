@@ -140,6 +140,7 @@ Zotero.Collection.prototype.loadFromRow = function (row) {
 		
 		// Integer or 0
 		case 'version':
+		case 'clientVersion':
 			val = val ? parseInt(val) : 0;
 			break;
 		
@@ -455,6 +456,8 @@ Zotero.Collection.prototype.removeItem = function (itemID, options = {}) {
  * Does not require a separate save()
  */
 Zotero.Collection.prototype.removeItems = async function (itemIDs, options = {}) {
+	options.skipDateModifiedUpdate = true;
+	
 	if (!itemIDs || !itemIDs.length) {
 		return;
 	}
@@ -472,10 +475,7 @@ Zotero.Collection.prototype.removeItems = async function (itemIDs, options = {})
 		
 		let item = await this.ChildObjects.getAsync(itemID);
 		item.removeFromCollection(this.id);
-		await item.save({
-			skipDateModifiedUpdate: true,
-			skipEditCheck: options.skipEditCheck
-		})
+		await item.save(options);
 	}
 };
 

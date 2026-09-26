@@ -755,6 +755,7 @@ class ReaderInstance {
 			autoDisableTextTool: Zotero.Prefs.get('reader.autoDisableTool.text'),
 			autoDisableImageTool: Zotero.Prefs.get('reader.autoDisableTool.image'),
 			sidebarView: Zotero.Prefs.get('reader.lastSidebarTab'),
+			popupPositions: this._getPopupPositions(),
 			enableReadAloud: true,
 			readAloudVoices: this._getReadAloudVoices(),
 			readAloudEnabledVoices: await this._getReadAloudEnabledVoices(),
@@ -946,6 +947,9 @@ class ReaderInstance {
 			},
 			onChangeSidebarView: (view) => {
 				Zotero.Prefs.set('reader.lastSidebarTab', view);
+			},
+			onSetPopupPosition: (id, position) => {
+				this._setPopupPosition(id, position);
 			},
 			onFocusContextPane: () => {
 				if (this instanceof ReaderWindow || !this._window.ZoteroContextPane.focus()) {
@@ -1244,6 +1248,7 @@ class ReaderInstance {
 			Zotero.Prefs.registerObserver('reader.autoDisableTool.note', this._handleAutoDisableToolPrefChange),
 			Zotero.Prefs.registerObserver('reader.autoDisableTool.text', this._handleAutoDisableToolPrefChange),
 			Zotero.Prefs.registerObserver('reader.autoDisableTool.image', this._handleAutoDisableToolPrefChange),
+			Zotero.Prefs.registerObserver('reader.popupPositions', this._handlePopupPositionsPrefChange),
 			Zotero.Prefs.registerObserver('reader.readAloudVoices', this._handleReadAloudVoicesPrefChange),
 			Zotero.Prefs.registerObserver('reader.readAloud.highlightGranularity', this._handleReadAloudHighlightGranularityChange),
 		];
@@ -1317,11 +1322,15 @@ class ReaderInstance {
 			}
 		}
 		if (annotations.length) {
+			// Annotations can be added before the reader finishes initializing -- e.g., when
+			// embedded annotations are imported right after opening a newly added file
+			await this._initPromise;
 			this._internalReader.setAnnotations(Components.utils.cloneInto(annotations, this._iframeWindow));
 		}
 	}
 
-	unsetAnnotations(keys) {
+	async unsetAnnotations(keys) {
+		await this._initPromise;
 		this._internalReader.unsetAnnotations(Components.utils.cloneInto(keys, this._iframeWindow));
 	}
 
@@ -1839,6 +1848,10 @@ class ReaderInstance {
 		this._internalReader.setAutoDisableImageTool(Zotero.Prefs.get('reader.autoDisableTool.image'));
 	};
 	
+	_handlePopupPositionsPrefChange = () => {
+		this._internalReader.setPopupPositions(Cu.cloneInto(this._getPopupPositions(), this._iframeWindow));
+	};
+
 	_handleReadAloudVoicesPrefChange = () => {
 		this._internalReader.setReadAloudVoices(Cu.cloneInto(this._getReadAloudVoices(), this._iframeWindow));
 	};
@@ -2346,6 +2359,28 @@ class ReaderInstance {
 		if (modified) {
 			await IOUtils.writeJSON(READ_ALOUD_ENABLED_VOICES_PATH, readAloudEnabledVoices);
 		}
+	}
+
+	/**
+	 * Positions of draggable reader popups, keyed by popup ID
+	 *
+	 * @returns {Object}
+	 */
+	_getPopupPositions() {
+		try {
+			let positions = JSON.parse(Zotero.Prefs.get('reader.popupPositions'));
+			return positions && typeof positions == 'object' ? positions : {};
+		}
+		catch {
+			return {};
+		}
+	}
+
+	_setPopupPosition(id, position) {
+		Zotero.Prefs.set('reader.popupPositions', JSON.stringify({
+			...this._getPopupPositions(),
+			[id]: { x: Math.round(position.x), y: Math.round(position.y) },
+		}));
 	}
 
 	_getReadAloudVoices() {

@@ -28,6 +28,9 @@
 // on Linux). Encrypted values are returned with a versioned prefix so callers
 // can distinguish them from legacy plaintext values previously written to
 // nsILoginManager.
+
+const KEYRING_KB_URL = 'https://www.zotero.org/support/kb/linux_keyring';
+
 Zotero.OSKeyStore = {
 	_prefix: 'oskv1:',
 	_module: null,
@@ -55,18 +58,45 @@ Zotero.OSKeyStore = {
 	isEncrypted: function (value) {
 		return typeof value == 'string' && value.startsWith(this._prefix);
 	},
+	
+	// Whether an error from encrypting or decrypting a credential came from the key store itself,
+	// as opposed to the login manager entry that holds the encrypted value
+	isKeyStoreError: function (e) {
+		return e instanceof Zotero.Error && !!e.keyStoreError;
+	},
 
-	// Show an alert when an active write of new credentials fails (e.g., keychain unavailable)
-	alertSaveFailed: function () {
-		let win = Services.wm.getMostRecentWindow('zotero:main');
-		if (!win) {
-			return;
+	// The settings window, where credentials are usually saved from, or the main window when
+	// they're saved during a sync
+	_getParentWindow: function () {
+		return Services.wm.getMostRecentWindow('zotero:pref')
+			|| Services.wm.getMostRecentWindow('navigator:browser');
+	},
+
+	get _moreInfoLabel() {
+		return Zotero.isLinux ? Zotero.getString('general-more-information') : undefined;
+	},
+
+	// Offer to store credentials unencrypted after a write to the keystore fails. The keystore
+	// can be unusable in ways the user can't fix -- most often on Linux, where the platform
+	// requires a Secret Service that some managed systems don't run.
+	//
+	// Returns true if the user agrees.
+	confirmUnencryptedFallback: function () {
+		let index = Zotero.Prompt.confirm({
+			window: this._getParentWindow(),
+			title: Zotero.getString('general-error'),
+			text: Zotero.getString('os-keystore-save-failed') + "\n\n"
+				+ Zotero.getString('os-keystore-save-unencrypted'),
+			button0: Zotero.getString('os-keystore-save-unencrypted-button'),
+			button1: Zotero.Prompt.BUTTON_TITLE_CANCEL,
+			button2: this._moreInfoLabel,
+			defaultButton: 1
+		});
+		if (index == 2) {
+			Zotero.launchURL(KEYRING_KB_URL);
+			return false;
 		}
-		Zotero.alert(
-			win,
-			Zotero.getString('general-error'),
-			Zotero.getString('os-keystore-save-failed')
-		);
+		return index == 0;
 	},
 
 	// Show a one-shot alert when migration of an existing legacy plaintext entry
@@ -78,15 +108,68 @@ Zotero.OSKeyStore = {
 			return;
 		}
 		this._migrateAlertShown = true;
-		let win = Services.wm.getMostRecentWindow('zotero:main');
+		let win = this._getParentWindow();
 		if (!win) {
 			return;
 		}
-		Zotero.alert(
-			win,
-			Zotero.getString('general-error'),
-			Zotero.getString('os-keystore-migrate-failed')
-		);
+		let index = Zotero.Prompt.confirm({
+			window: win,
+			title: Zotero.getString('general-error'),
+			text: Zotero.getString('os-keystore-migrate-failed'),
+			button0: Zotero.Prompt.BUTTON_TITLE_OK,
+			button1: this._moreInfoLabel
+		});
+		if (index == 1) {
+			Zotero.launchURL(KEYRING_KB_URL);
+		}
+	},
+
+	// Returns whether the store can actually be used. asyncSecretAvailable() isn't enough,
+	// since a locked or inaccessible store can still report a secret.
+	_usable: async function () {
+		let mod = this._load();
+		if (!mod) {
+			return false;
+		}
+		try {
+			await mod.encrypt('test');
+		}
+		catch {
+			return false;
+		}
+		return true;
+	},
+
+	// Mozilla's OSKeyStore reports every failure as a canceled unlock prompt, whatever the
+	// cause, so probe the native store to record what actually went wrong and return an error
+	// with a message that can be shown to the user
+	_error: async function (e, stringName) {
+		let detail;
+		// Make sure the label from Mozilla's module still exists
+		let label = this._module && this._module.STORE_LABEL;
+		if (typeof label != 'string' || !label) {
+			detail = "store label unavailable";
+		}
+		else {
+			try {
+				let keyStore = Cc["@mozilla.org/security/oskeystore;1"]
+					.getService(Ci.nsIOSKeyStore);
+				detail = (await keyStore.asyncSecretAvailable(label))
+					? "secret is available"
+					: "no secret stored";
+			}
+			catch (probeError) {
+				detail = "key store unusable: " + probeError;
+			}
+		}
+		Zotero.debug(`OS key store failure (${detail}): ${e}`, 1);
+		let data = { keyStoreError: e };
+		let moreInfoLabel = this._moreInfoLabel;
+		if (moreInfoLabel) {
+			data.dialogButtonText = moreInfoLabel;
+			data.dialogButtonCallback = () => Zotero.launchURL(KEYRING_KB_URL);
+		}
+		return new Zotero.Error(Zotero.getString(stringName), 0, data);
 	},
 
 	// Returns prefixed ciphertext. Throws if OSKeyStore is unavailable so we
@@ -94,9 +177,15 @@ Zotero.OSKeyStore = {
 	encrypt: async function (plaintext) {
 		let mod = this._load();
 		if (!mod) {
-			throw new Error("OSKeyStore unavailable");
+			throw await this._error(new Error("OSKeyStore unavailable"), 'os-keystore-save-failed');
 		}
-		let ciphertext = await mod.encrypt(plaintext);
+		let ciphertext;
+		try {
+			ciphertext = await mod.encrypt(plaintext);
+		}
+		catch (e) {
+			throw await this._error(e, 'os-keystore-save-failed');
+		}
 		return this._prefix + ciphertext;
 	},
 
@@ -110,8 +199,29 @@ Zotero.OSKeyStore = {
 		}
 		let mod = this._load();
 		if (!mod) {
-			throw new Error("OSKeyStore unavailable but stored value is encrypted");
+			throw await this._error(
+				new Error("OSKeyStore unavailable but stored value is encrypted"),
+				'os-keystore-read-failed'
+			);
 		}
-		return mod.decrypt(value.slice(this._prefix.length));
+		// OSKeyStore.encrypt() encodes the string as UTF-8 before encrypting, but
+		// OSKeyStore.decrypt() returns the decrypted bytes as a binary string, so
+		// decode it here
+		let binaryStr;
+		try {
+			binaryStr = await mod.decrypt(value.slice(this._prefix.length));
+		}
+		catch (e) {
+			// A read can fail because the store is unusable or because the store is working
+			// and the stored value just can't be decrypted with the current key. Those need
+			// different advice, since fixing the store won't bring the value back.
+			let stringName = (await this._usable())
+				? 'os-keystore-read-unrecoverable'
+				: 'os-keystore-read-failed';
+			throw await this._error(e, stringName);
+		}
+		return new TextDecoder().decode(
+			Uint8Array.from(binaryStr, char => char.charCodeAt(0))
+		);
 	}
 };

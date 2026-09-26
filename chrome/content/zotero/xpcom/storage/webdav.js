@@ -260,7 +260,14 @@ Zotero.Sync.Storage.Mode.WebDAV.prototype = {
 					}
 					catch (e) {
 						Zotero.logError(e);
-						Zotero.OSKeyStore.alertMigrateFailed();
+						if (!Zotero.Sync.Runner.backgroundSync) {
+							if (Zotero.OSKeyStore.isKeyStoreError(e)) {
+								Zotero.OSKeyStore.alertMigrateFailed();
+							}
+							else {
+								await Zotero.Sync.Data.Local.alertLoginManagerCorrupted();
+							}
+						}
 					}
 				}
 				return password;
@@ -273,7 +280,23 @@ Zotero.Sync.Storage.Mode.WebDAV.prototype = {
 		});
 		for (var i = 0; i < logins.length; i++) {
 			if (logins[i].username == username) {
-				return Zotero.OSKeyStore.decrypt(logins[i].password);
+				let password = logins[i].password;
+				if (Zotero.OSKeyStore.isEncrypted(password)) {
+					return Zotero.OSKeyStore.decrypt(password);
+				}
+				// Password stored without encryption after a failed write -- encrypt it now,
+				// in case the keystore has since become usable
+				if (!this._reencryptedPassword) {
+					this._reencryptedPassword = true;
+					try {
+						Zotero.debug("Encrypting unencrypted WebDAV password");
+						await this._writeEncryptedPassword(username, password);
+					}
+					catch (e) {
+						Zotero.logError(e);
+					}
+				}
+				return password;
 			}
 		}
 		
@@ -314,24 +337,7 @@ Zotero.Sync.Storage.Mode.WebDAV.prototype = {
 		this._basicAuthHeader = false;
 		this._digestParams = null;
 
-		try {
-			await this._writeEncryptedPassword(username, password);
-		}
-		catch (e) {
-			// If the write failed because the key database was unusable, reset the login
-			// manager and retry
-			if (!(await Zotero.Sync.Data.Local.repairLoginManager())) {
-				Zotero.OSKeyStore.alertSaveFailed();
-				throw e;
-			}
-			try {
-				await this._writeEncryptedPassword(username, password);
-			}
-			catch (e) {
-				Zotero.OSKeyStore.alertSaveFailed();
-				throw e;
-			}
-		}
+		await this._savePassword(username, password);
 		
 		// Drop any leftover plaintext entry from the legacy realm
 		var logins = await Services.logins.searchLoginsAsync({
@@ -368,7 +374,54 @@ Zotero.Sync.Storage.Mode.WebDAV.prototype = {
 		}
 	},
 	
+	/**
+	 * Store the password, retrying after a login manager repair and, if the keystore still
+	 * can't be used, offering to store the password without it
+	 */
+	async _savePassword(username, password) {
+		var error;
+		try {
+			await this._writeEncryptedPassword(username, password);
+			return;
+		}
+		catch (e) {
+			Zotero.logError(e);
+			error = e;
+		}
+		// If the write failed because the key database was unusable, reset the login manager
+		// and retry
+		if (await Zotero.Sync.Data.Local.repairLoginManager()) {
+			try {
+				await this._writeEncryptedPassword(username, password);
+				return;
+			}
+			catch (e) {
+				Zotero.logError(e);
+			}
+		}
+		// The login manager can fail to store a value even when the keystore works -- e.g., if
+		// the key database is read-only -- and storing the password unencrypted wouldn't help
+		if (!Zotero.OSKeyStore.isKeyStoreError(error)) {
+			await Zotero.Sync.Data.Local.alertLoginManagerCorrupted();
+			throw error;
+		}
+		// A password that would read back as ciphertext can't be stored unencrypted
+		if (Zotero.OSKeyStore.isEncrypted(password)) {
+			throw error;
+		}
+		if (!Zotero.OSKeyStore.confirmUnencryptedFallback()) {
+			throw error;
+		}
+		await this._writePassword(username, password);
+		// The keystore is unusable, so don't try to encrypt again on the next read
+		this._reencryptedPassword = true;
+	},
+	
 	async _writeEncryptedPassword(username, password) {
+		await this._writePassword(username, password && await Zotero.OSKeyStore.encrypt(password));
+	},
+	
+	async _writePassword(username, storedValue) {
 		// Remove any existing entries in the encrypted realm for this user
 		var logins = await Services.logins.searchLoginsAsync({
 			origin: this._loginManagerHost,
@@ -380,8 +433,7 @@ Zotero.Sync.Storage.Mode.WebDAV.prototype = {
 			}
 		}
 		
-		if (password) {
-			let storedValue = await Zotero.OSKeyStore.encrypt(password);
+		if (storedValue) {
 			let nsLoginInfo = new Components.Constructor("@mozilla.org/login-manager/loginInfo;1",
 				Components.interfaces.nsILoginInfo, "init");
 			let loginInfo = new nsLoginInfo(this._loginManagerHost, null,

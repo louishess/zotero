@@ -899,7 +899,7 @@
 				<popupset id="condition-tooltips"/>
 				
 				<menulist id="conditionsmenu" oncommand="this.closest('zoterosearchcondition').onConditionSelected(event.target.value); event.stopPropagation()" native="true">
-					<menupopup onpopupshown="if (event.target == this) this.closest('zoterosearchcondition').revealSelectedCondition()">
+					<menupopup nonnative="true" onpopupshown="if (event.target == this) this.closest('zoterosearchcondition').revealSelectedCondition()">
 						<menu id="attachment-conditions-menu">
 							<menupopup/>
 						</menu>
@@ -958,12 +958,14 @@
 			var annotationConditionsMenu = this.querySelector('#annotation-conditions-menu');
 			var conditions = Zotero.SearchConditions.getStandardConditions();
 
-			// Cache the (alphabetically sorted) condition list and set up
-			// find-as-you-type on the closed menu
-			this._conditions = conditions;
-			this._typeAheadBuffer = '';
-			this._typeAheadTime = 0;
-			conditionsMenu.addEventListener('keydown', event => this.handleConditionKeyDown(event), true);
+			// Most conditions are in submenus, so the menulist's own find-as-you-type can't
+			// reach them. Match on the full name rather than the short label the attachment
+			// and annotation submenus show, since the full name is what the menulist shows
+			// once the condition is selected.
+			Zotero.Utilities.Internal.addMenuFindAsYouType(
+				conditionsMenu.menupopup,
+				item => Zotero.SearchConditions.getLocalizedName(item.value)
+			);
 
 			// Label the submenus and seed the top-level entries with them, so the
 			// headings sort alphabetically alongside the primary conditions
@@ -1182,21 +1184,7 @@
 			switch (conditionName) {
 				case 'collection':
 				{
-					let rows = [];
-
-					var libraryID = this.parent.search.libraryID;
-
-					let cols = Zotero.Collections.getByLibrary(libraryID, true);
-					for (let col of cols) {
-						rows.push({
-							name: Zotero.Utilities.trimInternal(col.name),
-							value: 'C' + col.key,
-							image: Zotero.Collection.prototype.treeViewImage,
-							level: col.level
-						});
-					}
-
-					this.createValueMenu(rows);
+					this.createCollectionValueMenu(this.parent.search.libraryID);
 					break;
 				}
 				case 'savedSearch':
@@ -1398,6 +1386,7 @@
 
 		createValueMenu(rows) {
 			let valueMenu = this.querySelector('#valuemenu');
+			valueMenu.removeAttribute('tooltiptext');
 
 			while (valueMenu.hasChildNodes()) {
 				valueMenu.removeChild(valueMenu.firstChild);
@@ -1409,20 +1398,101 @@
 					menuitem.className = 'menuitem-iconic';
 					menuitem.setAttribute('image', row.image);
 				}
-				// Indent nested rows (subcollections)
-				if (row.level) {
-					menuitem.style.setProperty('--nesting-level', row.level);
-				}
 			}
 			valueMenu.selectedIndex = 0;
 			
 			if (this.value) {
 				valueMenu.value = this.value;
-				// If the value isn't in the menu (e.g., a collection from another
+				// If the value isn't in the menu (e.g., a saved search from another
 				// library after a library change), fall back to the first item
 				if (!valueMenu.selectedItem) {
 					valueMenu.selectedIndex = 0;
 				}
+			}
+		}
+
+		// Subcollections are shown in submenus, which the menulist can't select from, so
+		// the selection is kept in this.value (see showSelectedCollection())
+		createCollectionValueMenu(libraryID) {
+			let valueMenu = this.querySelector('#valuemenu');
+			valueMenu.removeAllItems();
+			let menupopup = valueMenu.appendChild(document.createXULElement('menupopup'));
+			// macOS renders a menulist's popup as a native menu, which can't be opened to a
+			// submenu and ignores CSS. Opt this one out so the path to the selected
+			// collection can be shown.
+			menupopup.setAttribute('nonnative', 'true');
+			
+			// If the stored collection isn't in this library (e.g., after a library change),
+			// select the first one
+			let selected = (this.value?.startsWith('C')
+					&& Zotero.Collections.getByLibraryAndKey(libraryID, this.value.substr(1)))
+				|| Zotero.Collections.getByLibrary(libraryID)[0];
+			
+			Zotero.Utilities.Internal.createMenuForTarget(
+				Zotero.Libraries.get(libraryID),
+				menupopup,
+				selected?.treeViewID,
+				(event, collection) => this.onCollectionSelected(event, collection),
+				null,
+				{ filter: target => target.objectType == 'collection' }
+			);
+			this.showSelectedCollection(selected);
+
+			// Open the submenus down to the selected collection
+			menupopup.addEventListener('popupshown', (event) => {
+				if (event.target != menupopup) {
+					return;
+				}
+				let item = menupopup.querySelector(`menuitem[checked]`);
+				let menus = [];
+				for (let menu = item?.closest('menu'); menu && menupopup.contains(menu);
+					menu = menu.parentElement?.closest('menu')) {
+					menus.unshift(menu);
+				}
+				let openNext = (index) => {
+					let menu = menus[index];
+					if (!menu) {
+						return;
+					}
+					menu.menupopup.addEventListener(
+						'popupshown', () => openNext(index + 1), { once: true }
+					);
+					menu.open = true;
+				};
+				// Wait for the outer popup to finish its own popupshown handling
+				setTimeout(() => openNext(0));
+			});
+		}
+
+		onCollectionSelected(event, collection) {
+			this.showSelectedCollection(collection);
+			// Clicking the row of a collection that has subcollections selects it without
+			// closing the menu or firing a command event
+			if (event.target.localName == 'menu') {
+				let valueMenu = this.querySelector('#valuemenu');
+				valueMenu.menupopup.hidePopup();
+				valueMenu.dispatchEvent(new Event('command', { bubbles: true }));
+			}
+		}
+
+		// The condition's value, since a collection in a submenu can't be the menulist's
+		// selected item and so can't be read back off the control
+		showSelectedCollection(collection) {
+			this.value = collection ? 'C' + collection.key : '';
+			let valueMenu = this.querySelector('#valuemenu');
+			// A top-level collection can still be the selected item, which lets the popup
+			// open positioned on it. One in a submenu can't, so set the label and icon
+			// directly instead.
+			valueMenu.selectedItem = null;
+			if (collection) {
+				valueMenu.value = collection.treeViewID;
+				valueMenu.setAttribute('label', collection.name);
+				valueMenu.setAttribute('image', collection.treeViewImage);
+				let names = [];
+				for (let c = collection; c; c = c.parentID && Zotero.Collections.get(c.parentID)) {
+					names.unshift(c.name);
+				}
+				valueMenu.setAttribute('tooltiptext', names.join(' \u203A '));
 			}
 		}
 
@@ -1487,6 +1557,10 @@
 			if (this._valueMenuPending) {
 				return this.value;
 			}
+			// The collection menu can't always hold the selection (see showSelectedCollection())
+			if (this.selectedCondition == 'collection') {
+				return this.value;
+			}
 			let valueField = this.querySelector('#valuefield');
 			if (!valueField.hidden) {
 				return valueField.value;
@@ -1546,16 +1620,12 @@
 				value = this.querySelector('#value-date-age').value;
 			}
 
-			// Handle special C1234 and S5678 form for
-			// collections and searches
-			else if (condition == 'collection' || condition == 'savedSearch') {
-				var letter = this.querySelector('#valuemenu').value.substr(0, 1);
-				if (letter == 'C') {
-					condition = 'collection';
-				}
-				else if (letter == 'S') {
-					condition = 'savedSearch';
-				}
+			// Values take the special C1234/S5678 form. A collection can be in a submenu,
+			// which a menulist can't select from, so its selection is kept on the condition.
+			else if (condition == 'collection') {
+				value = this.value.substr(1);
+			}
+			else if (condition == 'savedSearch') {
 				value = this.querySelector('#valuemenu').value.substr(1);
 			}
 
@@ -1611,70 +1681,6 @@
 			}
 			
 			return false;
-		}
-
-		// Find-as-you-type on the closed conditions menu. The native incremental
-		// find within the open popup only matches the visible top-level items, so
-		// this handles typing while the menu is closed to reach any condition,
-		// including the ~67 in the "More" submenu.
-		handleConditionKeyDown(event) {
-			var menu = this.querySelector('#conditionsmenu');
-			// Let the native incremental find handle typing while the popup is open,
-			// and ignore in-progress IME composition (event.key is "Process")
-			if (menu.open || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) {
-				return;
-			}
-			// Only act on a single printable character. Count code points rather
-			// than UTF-16 units so supplementary-plane characters (e.g. some CJK
-			// extension blocks) aren't treated as multi-key sequences.
-			if (Array.from(event.key).length != 1) {
-				return;
-			}
-
-			var now = Date.now();
-			// Start a new search if enough time has passed since the last keystroke
-			if (now - this._typeAheadTime > 1000) {
-				this._typeAheadBuffer = '';
-			}
-			this._typeAheadTime = now;
-
-			// With no search in progress, a space opens the menu instead of starting
-			// a search, matching the native menulist behavior
-			if (event.key == ' ' && !this._typeAheadBuffer) {
-				return;
-			}
-
-			this._typeAheadBuffer += event.key.toLowerCase();
-
-			var conditionName = this.findConditionByPrefix();
-			if (conditionName) {
-				event.preventDefault();
-				event.stopPropagation();
-				this.onConditionSelected(conditionName);
-			}
-		}
-
-		findConditionByPrefix() {
-			var buffer = this._typeAheadBuffer;
-			var conditions = this._conditions;
-
-			// When the same character is typed repeatedly, cycle through the
-			// matching conditions, starting after the currently selected one
-			var cycling = buffer.length > 1 && [...buffer].every(c => c == buffer[0]);
-			var prefix = cycling ? buffer[0] : buffer;
-
-			var startIndex = 0;
-			if (cycling) {
-				startIndex = conditions.findIndex(c => c.name == this.selectedCondition) + 1;
-			}
-
-			for (let i = 0; i < conditions.length; i++) {
-				let condition = conditions[(startIndex + i) % conditions.length];
-				if (condition.localized.toLowerCase().startsWith(prefix)) {
-					return condition.name;
-				}
-			}
-			return null;
 		}
 
 		onRemoveClicked(event) {

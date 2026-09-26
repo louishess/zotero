@@ -228,14 +228,18 @@ Zotero.Utilities.Internal = {
 	
 	
 	/**
+	 * Get the MD5 hash of a file, reading it via an off-main-thread stream and hashing it
+	 * a segment at a time so that the main thread is never blocked for the whole file
+	 *
 	 * @param {nsIFile|String} file  File or file path
+	 * @return {Promise<String|false>}  Lowercase hex string, or false if the file doesn't exist
 	 */
 	md5Async: async function (file) {
 		function toHexString(charCode) {
 			return ("0" + charCode.toString(16)).slice(-2);
 		}
 		
-		var file = Zotero.File.pathToFile(file);
+		file = Zotero.File.pathToFile(file);
 		try {
 			let { size } = await IOUtils.stat(file.path);
 			if (size === 0) {
@@ -257,29 +261,45 @@ Zotero.Utilities.Internal = {
 		
 		var is = Cc["@mozilla.org/network/file-input-stream;1"]
 			.createInstance(Ci.nsIFileInputStream);
-		try {
-			is.init(Zotero.File.pathToFile(file), -1, -1, Ci.nsIFileInputStream.CLOSE_ON_EOF);
-			ch.updateFromStream(is, -1);
-			// Get binary string and convert to hex string
-			let hash = ch.finish(false);
-			let hexStr = "";
-			for (let i = 0; i < hash.length; i++) {
-				hexStr += toHexString(hash.charCodeAt(i));
-			}
-			return hexStr;
-		}
-		catch (e) {
-			try {
-				ch.finish(false);
-			}
-			catch (e) {
-				Zotero.logError(e);
-			}
-			throw e;
-		}
-		finally {
-			is.close();
-		}
+		// DEFER_OPEN so that the file is opened on the pump's background thread rather than
+		// synchronously here
+		is.init(file, -1, -1, Ci.nsIFileInputStream.CLOSE_ON_EOF | Ci.nsIFileInputStream.DEFER_OPEN);
+		
+		var pump = Cc["@mozilla.org/network/input-stream-pump;1"]
+			.createInstance(Ci.nsIInputStreamPump);
+		pump.init(is, 0, 0, true);
+		
+		return new Promise((resolve, reject) => {
+			pump.asyncRead({
+				onStartRequest: function (_request) {},
+				
+				onDataAvailable: function (request, inputStream, offset, count) {
+					ch.updateFromStream(inputStream, count);
+				},
+				
+				onStopRequest: function (_request, status) {
+					if (!Components.isSuccessCode(status)) {
+						try {
+							ch.finish(false);
+						}
+						catch (e) {
+							Zotero.logError(e);
+						}
+						reject(new Components.Exception("Error reading " + file.path, status));
+						return;
+					}
+					// Get binary string and convert to hex string
+					let hash = ch.finish(false);
+					let hexStr = "";
+					for (let i = 0; i < hash.length; i++) {
+						hexStr += toHexString(hash.charCodeAt(i));
+					}
+					resolve(hexStr);
+				},
+				
+				QueryInterface: ChromeUtils.generateQI(["nsIStreamListener", "nsIRequestObserver"])
+			});
+		});
 	},
 	
 	
@@ -723,6 +743,51 @@ Zotero.Utilities.Internal = {
 			result += str;
 		}
 		return result;
+	},
+	
+	/**
+	 * Run a Gatekeeper assessment of the running app bundle
+	 *
+	 * Safari computes a code signing dictionary for the bundled Safari extension each time it
+	 * launches, and blocks the extension if that fails, which leaves the connector missing from
+	 * Safari's extensions list. The computation can start failing when the app is updated, and it
+	 * keeps failing on every subsequent launch. An assessment refreshes the system state that the
+	 * computation depends on, and Safari loads the extension again the next time it starts.
+	 *
+	 * macOS only. Does nothing for source builds, which don't bundle the extension.
+	 *
+	 * @return {Promise}
+	 */
+	assessAppBundle: async function () {
+		if (!Zotero.isMac || Zotero.isSourceBuild) {
+			return;
+		}
+		
+		let bundle = Services.dirsvc.get("XREExeF", Ci.nsIFile).parent.parent.parent;
+		
+		Zotero.debug("Running Gatekeeper assessment of " + bundle.path);
+		
+		let proc = await Subprocess.call({
+			command: '/usr/sbin/spctl',
+			arguments: ['-a', '-vv', bundle.path],
+			stderr: 'pipe'
+		});
+		
+		// spctl writes its verdict to stderr
+		let output = "";
+		let str;
+		while ((str = await proc.stderr.readString())) {
+			output += str;
+		}
+		let { exitCode } = await proc.wait();
+		
+		let message = "Gatekeeper assessment returned " + exitCode + "\n\n" + output.trim();
+		if (exitCode) {
+			Zotero.warn(message);
+		}
+		else {
+			Zotero.debug(message);
+		}
 	},
 	
 	/**
@@ -1709,6 +1774,10 @@ Zotero.Utilities.Internal = {
 	 * Create a libraryOrCollection DOM tree to place in <menupopup> element.
 	 * If has no children, returns a <menuitem> element, otherwise <menu>.
 	 *
+	 * When the menu belongs to a <menulist>, typing while the menu is closed selects the
+	 * first matching target at any depth, since the platform's own find-as-you-type only
+	 * reaches the items of the open popup.
+	 *
 	 * @param {Library|Collection} libraryOrCollection
 	 * @param {Node<menupopup>} elem Parent element
 	 * @param {Zotero.Library|Zotero.Collection} currentTarget Currently selected item (displays as checked)
@@ -1716,17 +1785,19 @@ Zotero.Utilities.Internal = {
 	 * 		Receives the event and libraryOrCollection for given item.
 	 * @param {Function} disabledPred If provided, called on each library/collection
 	 * 		to determine whether disabled
+	 * @param {Object} [options]
+	 * @param {Function} [options.filter] If provided, called on each library/collection to
+	 * 		determine whether to include it. An excluded target is replaced by its subcollections.
 	 *
-	 * @return {Node<menuitem>|Node<menu>} appended node
+	 * @return {Node<menuitem>|Node<menu>|null} appended node, or null if the target was excluded
 	 */
-	createMenuForTarget: function (libraryOrCollection, elem, currentTarget, clickAction, disabledPred) {
+	createMenuForTarget: function (libraryOrCollection, elem, currentTarget, clickAction, disabledPred, options = {}) {
 		var doc = elem.ownerDocument;
 		function _createMenuitem(label, value, icon, command, disabled) {
 			let menuitem = doc.createXULElement('menuitem');
 			menuitem.setAttribute("label", label);
 			if (value == currentTarget) {
-				// type="checkbox" hides icon, so only set if checked
-				menuitem.setAttribute("type", "checkbox");
+				// Not type="checkbox", which suppresses the icon
 				menuitem.setAttribute("checked", "true");
 			}
 			menuitem.setAttribute("value", value);
@@ -1754,54 +1825,172 @@ Zotero.Utilities.Internal = {
 			return menu;
 		}
 		
-		var imageSrc = libraryOrCollection.treeViewImage;
-		
-		// Create menuitem for library or collection itself, to be placed either directly in the
-		// containing menu or as the top item in a submenu
-		var menuitem = _createMenuitem(
-			libraryOrCollection.name,
-			libraryOrCollection.treeViewID,
-			imageSrc,
-			function (event) {
-				clickAction(event, libraryOrCollection);
-			},
-			disabledPred && disabledPred(libraryOrCollection)
-		);
-		
-		var collections;
-		if (libraryOrCollection.objectType == 'collection') {
-			collections = Zotero.Collections.getByParent(libraryOrCollection.id);
-		}
-		else {
-			collections = Zotero.Collections.getByLibrary(libraryOrCollection.libraryID);
-		}
-		
-		// If no subcollections, place menuitem for target directly in containing men
-		if (collections.length == 0) {
-			elem.appendChild(menuitem);
-			return menuitem;
-		}
-		
-		// Otherwise create a submenu for the target's subcollections
-		var menu = _createMenu(
-			libraryOrCollection.name,
-			libraryOrCollection.treeViewID,
-			imageSrc,
-			function (event) {
-				clickAction(event, libraryOrCollection);
+		// The menu isn't rebuilt between openings, so move the checkmark to the target
+		// that's activated. A <menulist> marks the item clicked in its own popup as
+		// selected, drawing a checkmark of its own, and can't clear it when the next
+		// pick is in a submenu, so clear that too.
+		function _setCurrentTarget(target) {
+			if (!currentTarget) {
+				return;
 			}
-		);
-		var menupopup = menu.firstChild;
-		menupopup.appendChild(menuitem);
-		menupopup.appendChild(doc.createXULElement('menuseparator'));
-		for (let collection of collections) {
-			let collectionMenu = this.createMenuForTarget(
-				collection, elem, currentTarget, clickAction, disabledPred
-			);
-			menupopup.appendChild(collectionMenu);
+			for (let menuitem of elem.querySelectorAll('menuitem[checked], menuitem[selected]')) {
+				menuitem.removeAttribute('checked');
+				menuitem.removeAttribute('selected');
+			}
+			let menuitem = elem.querySelector(`menuitem[value="${target.treeViewID}"]`);
+			if (menuitem) {
+				menuitem.setAttribute('checked', 'true');
+			}
 		}
-		elem.appendChild(menu);
-		return menu;
+		
+		function _appendTarget(target, parent) {
+			let collections = target.objectType == 'collection'
+				? Zotero.Collections.getByParent(target.id)
+				: Zotero.Collections.getByLibrary(target.libraryID);
+			
+			// Subcollections move up to take the place of an excluded target
+			if (options.filter && !options.filter(target)) {
+				for (let collection of collections) {
+					_appendTarget(collection, parent);
+				}
+				return null;
+			}
+			
+			let command = (event) => {
+				_setCurrentTarget(target);
+				clickAction(event, target);
+			};
+			let imageSrc = target.treeViewImage;
+			
+			// Create menuitem for library or collection itself, to be placed either directly in
+			// the containing menu or as the top item in a submenu
+			let menuitem = _createMenuitem(
+				target.name,
+				target.treeViewID,
+				imageSrc,
+				command,
+				disabledPred && disabledPred(target)
+			);
+			
+			// If no subcollections, place menuitem for target directly in containing menu
+			if (collections.length == 0) {
+				parent.appendChild(menuitem);
+				return menuitem;
+			}
+			
+			// Otherwise create a submenu for the target's subcollections
+			let menu = _createMenu(target.name, target.treeViewID, imageSrc, command);
+			let menupopup = menu.firstChild;
+			menupopup.appendChild(menuitem);
+			menupopup.appendChild(doc.createXULElement('menuseparator'));
+			for (let collection of collections) {
+				_appendTarget(collection, menupopup);
+			}
+			parent.appendChild(menu);
+			return menu;
+		}
+		
+		var node = _appendTarget(libraryOrCollection, elem);
+		this.addMenuFindAsYouType(elem);
+		return node;
+	},
+	
+	
+	MENU_FIND_AS_YOU_TYPE_TIMEOUT: 1000,
+	
+	
+	/**
+	 * Whether typing in `menulist` is currently building up a find-as-you-type search
+	 *
+	 * @param {Node<menulist>} menulist
+	 * @return {Boolean}
+	 */
+	isMenuFindAsYouTypeActive: function (menulist) {
+		let state = menulist._findAsYouType;
+		return !!state?.buffer
+			&& Date.now() - state.time <= this.MENU_FIND_AS_YOU_TYPE_TIMEOUT;
+	},
+	
+	
+	/**
+	 * Select an item by typing on the closed <menulist> whose menu is `elem``
+	 *
+	 * A menulist's built-in find-as-you-type only looks at the direct children of its
+	 * menupopup, so an item in a submenu can't be reached from the keyboard without opening
+	 * the menu. This matches on every menuitem in the menu instead, and cycles through the
+	 * matches when the same character is typed repeatedly.
+	 *
+	 * @param {Node<menupopup>} elem
+	 * @param {Function} [getLabel] Given a menuitem, the text to match it on, for a menu
+	 *     whose items are shown with a different label than the menulist gives them
+	 */
+	addMenuFindAsYouType: function (elem, getLabel = item => item.label) {
+		var menulist = elem.closest('menulist');
+		if (!menulist) {
+			return;
+		}
+		// The search is kept on the menulist so that the space-opens-a-menulist handler in
+		// customElements.js can see one in progress
+		if (menulist._findAsYouType) {
+			Object.assign(menulist._findAsYouType, { popup: elem, getLabel, buffer: '', time: 0 });
+			return;
+		}
+		let state = menulist._findAsYouType = { popup: elem, getLabel, buffer: '', time: 0 };
+		
+		menulist.addEventListener('keydown', (event) => {
+			// A later call can replace the menu, so take these from the state rather than
+			// from this call's arguments
+			let { popup, getLabel: getItemLabel } = state;
+			// The menu has been replaced by one this doesn't know about
+			if (menulist.menupopup != popup) {
+				return;
+			}
+			// Let the platform handle typing while the popup is open, and ignore in-progress
+			// IME composition (event.key is "Process")
+			if (menulist.open || event.isComposing
+					|| event.ctrlKey || event.metaKey || event.altKey) {
+				return;
+			}
+			// Only act on a single printable character. Count code points rather than UTF-16
+			// units so supplementary-plane characters aren't treated as multi-key sequences.
+			if (Array.from(event.key).length != 1) {
+				return;
+			}
+			
+			// Start a new search if enough time has passed since the last keystroke
+			let now = Date.now();
+			if (now - state.time > this.MENU_FIND_AS_YOU_TYPE_TIMEOUT) {
+				state.buffer = '';
+			}
+			state.time = now;
+			
+			// With no search to continue, leave the space to open the menu
+			if (event.key == ' ' && !state.buffer) {
+				return;
+			}
+			state.buffer += event.key.toLowerCase();
+			// Keep the platform's own incremental search from acting on the same keystroke
+			event.preventDefault();
+			
+			// When the same character is typed repeatedly, cycle through the matching items,
+			// starting after the current one
+			let items = [...popup.querySelectorAll('menuitem:not([disabled], [hidden])')];
+			let cycling = state.buffer.length > 1
+				&& [...state.buffer].every(c => c == state.buffer[0]);
+			let prefix = cycling ? state.buffer[0] : state.buffer;
+			let startIndex = cycling
+				? items.findIndex(item => item.hasAttribute('checked')) + 1
+				: 0;
+			
+			for (let i = 0; i < items.length; i++) {
+				let item = items[(startIndex + i) % items.length];
+				if (getItemLabel(item).toLowerCase().startsWith(prefix)) {
+					event.stopPropagation();
+					item.doCommand();
+					break;
+				}
+			}
+		}, true);
 	},
 	
 	openPreferences: function (paneID, options = {}) {
@@ -2185,6 +2374,14 @@ Zotero.Utilities.Internal = {
 			}
 			ev.listeners.delete(listener);
 		};
+		
+		/**
+		 * Remove all listeners from all events, so that an object being torn down doesn't
+		 * keep its listeners' closures alive
+		 */
+		cls.prototype.clearEventListeners = function () {
+			this._events = null;
+		};
 
 		cls.prototype._waitForEvent = async function (event) {
 			return new Zotero.Promise((resolve) => {
@@ -2452,18 +2649,21 @@ Zotero.Utilities.Internal = {
 	},
 
 	/**
-	 * Check whether an object belongs to a closed window, and is therefore
-	 * keeping it alive.
+	 * Check whether an object or function belongs to a closed window, and is
+	 * therefore keeping it alive.
+	 *
+	 * A window only counts as leaked once it's closed and detached from its
+	 * docShell, which happens after its 'unload' handlers have run.
 	 *
 	 * @param {any} obj
 	 * @returns {boolean}
 	 */
 	isObjectLeakingWindow(obj) {
-		if (typeof obj !== 'object' || obj === null) {
+		if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
 			return false;
 		}
 		let global = Cu.getGlobalForObject(obj);
-		return global.constructor.name === 'Window' && global.closed;
+		return global.constructor.name === 'Window' && global.closed && !global.docShell;
 	}
 };
 
@@ -3237,9 +3437,16 @@ Zotero.Utilities.Internal.onDragItems = function (event, itemIDs, dragImage = ev
 	let files = items
 		.filter(item => item.isAttachment())
 		.map(item => item.getFilePath())
-		.filter(path => path);
+		.filter(path => path)
+		.map(path => Zotero.File.pathToFile(path))
+		.filter(file => file.exists());
 
 	if (files.length) {
+		if (Zotero.isWin) {
+			// Copies from earlier drags are no longer in use
+			Zotero.TempFileDragDataProvider.removeCopies();
+		}
+
 		// Advanced multi-file drag (with unique filenames, which otherwise happen automatically on
 		// Windows but not Linux) and auxiliary snapshot file copying on macOS
 		let dataProvider;
@@ -3248,32 +3455,43 @@ Zotero.Utilities.Internal.onDragItems = function (event, itemIDs, dragImage = ev
 		}
 
 		for (let i = 0; i < files.length; i++) {
-			let file = Zotero.File.pathToFile(files[i]);
+			let file = files[i];
 
 			if (dataProvider) {
 				Zotero.debug("Adding application/x-moz-file-promise");
 				event.dataTransfer.mozSetDataAt("application/x-moz-file-promise", dataProvider, i);
 			}
 
-			// Allow dragging to filesystem on Linux and Windows
-			let uri;
-			if (!Zotero.isMac) {
+			// Allow dragging to filesystem on Linux
+			if (Zotero.isLinux) {
 				Zotero.debug("Adding text/x-moz-url " + i);
-				uri = Zotero.File.pathToFileURI(file);
+				let uri = Zotero.File.pathToFileURI(file);
 				event.dataTransfer.mozSetDataAt("text/x-moz-url", uri + '\n' + file.leafName, i);
 			}
 
-			// Allow dragging to web targets (e.g., Gmail)
+			// Allow dragging to the filesystem and web targets (e.g., Gmail). On Windows, hand
+			// targets a copy in the temp directory, since File Explorer moves a dropped file for
+			// an unmodified drag and would otherwise move it out of storage.
 			Zotero.debug("Adding application/x-moz-file " + i);
-			event.dataTransfer.mozSetDataAt("application/x-moz-file", file, i);
+			event.dataTransfer.mozSetDataAt(
+				"application/x-moz-file",
+				Zotero.isWin ? new Zotero.TempFileDragDataProvider(files[i]) : file,
+				i
+			);
 
-			if (Zotero.isWin) {
-				event.dataTransfer.mozSetDataAt("application/x-moz-file-promise-url", uri, i);
-			}
-			else if (Zotero.isLinux) {
-				// Don't create a symlink for an unmodified drag
+			if (Zotero.isLinux) {
+				// Copy rather than symlink for an unmodified drag. Drops within Zotero can still
+				// move -- see LibraryTreeView::setDropEffect().
 				event.dataTransfer.effectAllowed = 'copy';
 			}
+		}
+
+		if (Zotero.isWin) {
+			event.currentTarget.addEventListener(
+				'dragend',
+				() => Zotero.TempFileDragDataProvider.onDragEnd(),
+				{ once: true }
+			);
 		}
 	}
 

@@ -600,6 +600,57 @@ describe("Zotero.Search", function () {
 					await item.eraseTx();
 				});
 
+				it("should match Any Field against an attachment's own fields at the attachment result level", async function () {
+					// 'Any Field' expands to the generic 'field' condition, which covers every
+					// searchable field, including the ones attachments have -- so it matches an
+					// attachment's own URL, not just its parent item's
+					var itemURL = 'https://example.com/zaf' + Zotero.Utilities.randomString();
+					var attURL = 'https://example.com/zaf' + Zotero.Utilities.randomString();
+					var item = await createDataObject('item');
+					item.setField('url', itemURL);
+					await item.saveTx();
+					var attachment = await importPDFAttachment(item);
+					attachment.setField('url', attURL);
+					await attachment.saveTx();
+
+					let search = (value) => {
+						var s = new Zotero.Search();
+						s.libraryID = userLibraryID;
+						s.addCondition('resultLevel', 'attachment');
+						s.addCondition('anyField', 'contains', value);
+						return s.search();
+					};
+
+					assert.sameMembers(await search(attURL), [attachment.id]);
+					// The parent item's URL isn't the attachment's, as with a single-field condition
+					assert.sameMembers(await search(itemURL), []);
+
+					await item.eraseTx();
+				});
+
+				it("should match an item by Any Field in a group at the attachment level", async function () {
+					// "top-level items matching, in the same attachment, Any Field contains X"
+					var url = 'https://example.com/zafg' + Zotero.Utilities.randomString();
+					var item = await createDataObject('item');
+					var attachment = await importPDFAttachment(item);
+					attachment.setField('url', url);
+					await attachment.saveTx();
+					var other = await createDataObject('item');
+					await importPDFAttachment(other);
+
+					var s = new Zotero.Search();
+					s.libraryID = userLibraryID;
+					s.addCondition('resultLevel', 'item');
+					s.addCondition('groupStart', 'true', '');
+					s.addCondition('resultLevel', 'attachment');
+					s.addCondition('anyField', 'contains', url);
+					s.addCondition('groupEnd', 'true', '');
+					assert.sameMembers(await s.search(), [item.id]);
+
+					await item.eraseTx();
+					await other.eraseTx();
+				});
+
 				it("should map a bare descendant condition to the result level (no group)", async function () {
 					var text = 'zbarecorr' + Zotero.Utilities.randomString();
 					var item = await createDataObject('item', { title: 'zbarecorritem' });
@@ -877,21 +928,23 @@ describe("Zotero.Search", function () {
 				});
 
 				it("should have same result after the same search conditions is removed and added", async function () {
-					var itemOne = await createDataObject('item', { title: "One" });
-					var itemTwo = await createDataObject('item', { title: "Two" });
+					var titleOne = 'zremadd' + Zotero.Utilities.randomString();
+					var titleTwo = 'zremadd' + Zotero.Utilities.randomString();
+					var itemOne = await createDataObject('item', { title: titleOne });
+					var itemTwo = await createDataObject('item', { title: titleTwo });
 
 					var s = new Zotero.Search();
 					s.libraryID = itemOne.libraryID;
 					s.addCondition("joinMode", "any");
-					// Match both collections
-					s.addCondition('title', 'contains', 'One');
-					s.addCondition('title', 'contains', 'Two');
+					// Match both items
+					s.addCondition('title', 'contains', titleOne);
+					s.addCondition('title', 'contains', titleTwo);
 					var matches = await s.search();
 					assert.sameMembers(matches, [itemOne.id, itemTwo.id]);
 
 					// Remove the first condition and add it again
 					s.removeCondition(1);
-					s.addCondition('title', 'contains', 'One');
+					s.addCondition('title', 'contains', titleOne);
 					matches = await s.search();
 					// Result should be the same
 					assert.sameMembers(matches, [itemOne.id, itemTwo.id]);
@@ -1109,6 +1162,38 @@ describe("Zotero.Search", function () {
 				});
 			});
 			
+			describe("date-type item fields", function () {
+				it("should compare dates and still accept text operators", async function () {
+					let item1 = await createDataObject('item', { itemType: 'patent' });
+					item1.setField('filingDate', '2019-06-08');
+					await item1.saveTx();
+					let item2 = await createDataObject('item', { itemType: 'patent' });
+					item2.setField('filingDate', '2021-01-15');
+					await item2.saveTx();
+
+					// A value with no parsable year has nothing to compare
+					let item3 = await createDataObject('item', { itemType: 'patent' });
+					item3.setField('filingDate', 'Foo');
+					await item3.saveTx();
+
+					let s = new Zotero.Search();
+					s.libraryID = userLibraryID;
+					s.addCondition('filingDate', 'isBefore', '2020');
+					let matches = await s.search();
+					assert.include(matches, item1.id);
+					assert.notInclude(matches, item2.id);
+					assert.notInclude(matches, item3.id);
+
+					// A text operator, as in an existing saved search
+					s = new Zotero.Search();
+					s.libraryID = userLibraryID;
+					s.addCondition('filingDate', 'contains', '2021');
+					matches = await s.search();
+					assert.include(matches, item2.id);
+					assert.notInclude(matches, item1.id);
+				});
+			});
+
 			describe("fileTypeID", function () {
 				it("should search by attachment file type", async function () {
 					let s = new Zotero.Search();
@@ -1477,33 +1562,37 @@ describe("Zotero.Search", function () {
 					await item.eraseTx();
 				});
 				it("should return matches for multiple 'any field' conditions with joinMode=any", async function () {
-					var itemOne = await createDataObject('item', { title: "one" });
-					var itemTwo = await createDataObject('item', { title: "two" });
-					
+					var titleOne = 'zanyj' + Zotero.Utilities.randomString();
+					var titleTwo = 'zanyk' + Zotero.Utilities.randomString();
+					var itemOne = await createDataObject('item', { title: titleOne });
+					var itemTwo = await createDataObject('item', { title: titleTwo });
+
 					var s = new Zotero.Search();
 					s.libraryID = userLibraryID;
 					s.addCondition('joinMode', 'any');
-					s.addCondition('anyField', 'contains', "one");
-					s.addCondition('anyField', 'contains', "two");
+					s.addCondition('anyField', 'contains', titleOne);
+					s.addCondition('anyField', 'contains', titleTwo);
 					var matches = await s.search();
 					assert.sameMembers(matches, [itemOne.id, itemTwo.id]);
 				});
 				it("should return matches for 'any field' and title condition with joinMode=any", async function () {
-					var itemOne = await createDataObject('item', { title: "three" });
-					var itemTwo = await createDataObject('item', { title: "four" });
-					
+					var titleOne = 'zanyt' + Zotero.Utilities.randomString();
+					var titleTwo = 'zanyu' + Zotero.Utilities.randomString();
+					var itemOne = await createDataObject('item', { title: titleOne });
+					var itemTwo = await createDataObject('item', { title: titleTwo });
+
 					var s = new Zotero.Search();
 					s.libraryID = userLibraryID;
 					s.addCondition('joinMode', 'any');
-					s.addCondition('anyField', 'contains', "three");
-					s.addCondition('title', 'contains', "four");
+					s.addCondition('anyField', 'contains', titleOne);
+					s.addCondition('title', 'contains', titleTwo);
 					var matches = await s.search();
 					assert.sameMembers(matches, [itemOne.id, itemTwo.id]);
 				});
 				it("should return matches for a single 'any field' condition", async function () {
-					var itemOne = await createDataObject('item', { title: "five" });
+					var itemOne = await createDataObject('item', { title: 'zanys' + Zotero.Utilities.randomString() });
 					var itemTwo = await createDataObject('item');
-					
+
 					var s = new Zotero.Search();
 					s.libraryID = userLibraryID;
 					s.addCondition('anyField', 'contains', itemOne.getDisplayTitle());
@@ -1511,13 +1600,15 @@ describe("Zotero.Search", function () {
 					assert.sameMembers(matches, [itemOne.id]);
 				});
 				it("should return matches for two 'any field' condition with joinMode=all", async function () {
-					var itemOne = await createDataObject('item', { title: "six-seven" });
-					var itemTwo = await createDataObject('item', { title: "seven-six" });
+					var wordOne = 'zanyv' + Zotero.Utilities.randomString();
+					var wordTwo = 'zanyw' + Zotero.Utilities.randomString();
+					var itemOne = await createDataObject('item', { title: wordOne + '-' + wordTwo });
+					var itemTwo = await createDataObject('item', { title: wordTwo + '-' + wordOne });
 
 					var s = new Zotero.Search();
 					s.libraryID = userLibraryID;
-					s.addCondition('anyField', 'contains', "six");
-					s.addCondition('anyField', 'contains', "seven");
+					s.addCondition('anyField', 'contains', wordOne);
+					s.addCondition('anyField', 'contains', wordTwo);
 					s.addCondition('joinMode', 'all');
 					var matches = await s.search();
 					assert.sameMembers(matches, [itemOne.id, itemTwo.id]);

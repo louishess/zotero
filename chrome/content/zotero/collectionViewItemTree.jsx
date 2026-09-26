@@ -50,6 +50,25 @@ const { ZOTERO_CONFIG } = ChromeUtils.importESModule('resource://zotero/config.m
 
 const COLORED_TAGS_RE = new RegExp("^(?:Numpad|Digit)([0-" + Zotero.Tags.MAX_COLORED_TAGS + "]{1})$");
 
+/**
+ * Message for a failed items list load, naming the plugin responsible if the error came
+ * from plugin code
+ *
+ * @param {Error} e
+ * @return {Promise<String>}
+ */
+async function getLoadErrorMessage(e) {
+	let plugin = await Zotero.Plugins.getPluginFromError(e);
+	if (!plugin) {
+		return Zotero.getString('pane.items.loadError');
+	}
+	Zotero.warn(`Items list failed to load in a call from plugin ${plugin.name} (${plugin.id})`);
+	return Zotero.ftl.formatValueSync('items-list-load-error-plugin', {
+		// The message is rendered as HTML
+		plugin: Zotero.Utilities.htmlSpecialChars(plugin.name)
+	});
+}
+
 // Minimal CollectionTreeRow-like object for callers that pass plain objects to
 // changeCollectionTreeRow()/setCollectionTreeRow() (e.g. advanced search).
 const STUB_COLLECTION_TREE_ROW = {
@@ -628,7 +647,7 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 			}
 			await Zotero.Promise.delay();
 			this.runListeners('update', true, {
-				message: Zotero.getString('pane.items.loadError')
+				message: await getLoadErrorMessage(e)
 			});
 			throw e;
 		}
@@ -645,6 +664,7 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 		const cachedSelection = this.itemTree._cachedSelection;
 				const collectionTreeRows = this.collectionTreeRows;
 
+		var initialRowCount = this.getRowCount();
 		var madeChanges = false;
 		var refresh = false;
 		var sort = false;
@@ -732,6 +752,7 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 					this._removeRows(rows);
 					rowsToInvalidate = true; // all rows
 					this.runListeners('update', true);
+					this.itemTree.runListeners('rowCountChange');
 				}
 			}
 
@@ -1084,6 +1105,10 @@ class CollectionViewItemTreeRowProvider extends ItemTreeRowProvider {
 				selection: rowsToSelect
 			});
 		}
+
+		if (this.getRowCount() != initialRowCount) {
+			this.itemTree.runListeners('rowCountChange');
+		}
 	}
 }
 
@@ -1102,8 +1127,10 @@ class CollectionViewItemTree extends ItemTree {
 		// Triggered when the item tree is refreshed:
 		// - Collection/view changed (changeCollectionTreeRow)
 		// - Search/filter updated (setFilter)
-		// - Items added/removed/modified (notify -> refresh)
 		this.onRefresh = this.createEventBinding('refresh');
+		// Triggered when notifier events change the number of rows in the view
+		// (e.g., items added during a sync)
+		this.onRowCountChange = this.createEventBinding('rowCountChange');
 	}
 
 	get viewMode() { return this.rowProvider.viewMode; }
@@ -1324,6 +1351,7 @@ class CollectionViewItemTree extends ItemTree {
 		try {
 			event.preventDefault();
 			event.stopPropagation();
+			Zotero.DragDrop.currentDropEffect = null;
 			var previousOrientation = Zotero.DragDrop.currentOrientation;
 			Zotero.DragDrop.currentOrientation = getDragTargetOrient(event);
 			Zotero.debug(`Dragging over item ${row} with ${Zotero.DragDrop.currentOrientation}, drop row: ${this._dropRow}`);
@@ -1576,7 +1604,11 @@ class CollectionViewItemTree extends ItemTree {
 		}
 		this._dropRow = null;
 		Zotero.DragDrop.currentDragSource = null;
-		if (!dataTransfer.dropEffect || dataTransfer.dropEffect == "none") {
+		// Use the effect set in onDragOver(), which the drop event's dropEffect may not reflect
+		// (see LibraryTreeView::setDropEffect())
+		var dropEffect = Zotero.DragDrop.currentDropEffect || dataTransfer.dropEffect;
+		Zotero.DragDrop.currentDropEffect = null;
+		if (!dropEffect || dropEffect == "none") {
 			return false;
 		}
 
@@ -1585,7 +1617,6 @@ class CollectionViewItemTree extends ItemTree {
 			Zotero.debug("No drag data");
 			return false;
 		}
-		var dropEffect = dragData.dropEffect;
 		var dataType = dragData.dataType;
 		var data = dragData.data;
 		var sourceCollectionTreeRow = Zotero.DragDrop.getDragSource(dataTransfer);

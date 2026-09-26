@@ -1,17 +1,17 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Version of Gecko to build with
-GECKO_VERSION_MAC="153.0esr"
-GECKO_VERSION_LINUX="153.0esr"
-GECKO_VERSION_WIN="153.0esr"
+GECKO_VERSION_MAC="153.3.0esr"
+GECKO_VERSION_LINUX="153.3.0esr"
+GECKO_VERSION_WIN="153.3.0esr"
 RUST_VERSION=1.94.0
 
 # URL prefix for custom builds of Firefox components
 custom_components_url="https://download.zotero.org/dev/firefox-components/"
 custom_components_hash_mac=""
-custom_components_hash_win_x64="be63d44b92858ccd73b3e8b0100b36b35499e4076d76ffb2fa7b9c164fb63b7b"
-custom_components_hash_win_arm64="80e553e0056df63531923b5cdc66e3d7d4e655e7344593b7b09c89c3d3000975"
-custom_components_hash_win32="b371153799c1f16b5e13a64be1835402ee2e2d277457b5e4969470c7d251754b"
+custom_components_hash_win_x64="db7c9556bd0f9e36120069391ce66cc199ed1ec4e2fdd3b931f71e35b4586d2b"
+custom_components_hash_win_arm64="fd0f44b38a471009ce1cdd926f7f48be43ed773dad350c62383b8a7235da8711"
+custom_components_hash_win32="694944349fdfd91296f272a68ac5d03183f02d47fdaa7ba9f2b1c74747652aa2"
 
 APP_NAME="Zotero"
 APP_ID="zotero\@zotero.org"
@@ -28,6 +28,9 @@ NOTARIZATION_BUNDLE_ID=""
 NOTARIZATION_USER=""
 NOTARIZATION_TEAM_ID=""
 NOTARIZATION_PASSWORD=""
+# Name of a notarytool keychain profile (see `xcrun notarytool store-credentials`), e.g., for an
+# App Store Connect API key -- used instead of the Apple ID settings above if set
+NOTARIZATION_PROFILE=""
 
 # Paths for Windows installer build
 NSIS_DIR='C:\Program Files (x86)\NSIS\'

@@ -38,6 +38,8 @@ var ZoteroPane = new function () {
 	this._listeners = {};
 	this.__defineGetter__('loaded', function () { return _loaded; });
 	var _lastSelectedItems = [];
+	// [element, listener] for the collection tree focus listener added in initCollectionsTree()
+	var _collectionsTreeFocusListener = null;
 	var lastFocusedElement = null;
 	this.lastKeyPress = null;
 	
@@ -62,6 +64,8 @@ var ZoteroPane = new function () {
 	|| ev.getModifierState("Control") || ev.getModifierState("OS");
 	
 	const TAB_NUMBER_CODE_RE = /^(?:Numpad|Digit)([0-9])$/;
+	
+	const RECENT_COLLECTIONS_SHOWN = 5;
 
 	var self = this,
 		_loaded = false, _madeVisible = false,
@@ -573,8 +577,10 @@ var ZoteroPane = new function () {
 			
 		Zotero_Tabs.init();
 		ZoteroContextPane.init();
-		await ZoteroPane.initCollectionsTree();
+		// The items tree has to be initialized first, since the collections tree selects a
+		// row as soon as it's initialized, which loads items into the items tree
 		await ZoteroPane.initItemsTree();
+		await ZoteroPane.initCollectionsTree();
 		ZoteroPane.initCollectionTreeSearch();
 		
 		// Add a default progress window
@@ -775,10 +781,18 @@ var ZoteroPane = new function () {
 		
 		this.serializePersist();
 
+		if (_collectionsTreeFocusListener) {
+			let [elem, listener] = _collectionsTreeFocusListener;
+			elem.removeEventListener("focus", listener);
+			_collectionsTreeFocusListener = null;
+		}
 		if(this.collectionsView) this.collectionsView.unregister();
 		if(this.itemsView) this.itemsView.unregister();
 		if (_syncRemindersObserverID) {
 			Zotero.Notifier.unregisterObserver(_syncRemindersObserverID);
+		}
+		if (_apiKeyObserverID) {
+			Zotero.Notifier.unregisterObserver(_apiKeyObserverID);
 		}
 		
 		this.uninitContainers();
@@ -1613,6 +1627,20 @@ var ZoteroPane = new function () {
 			ZoteroPane.itemsView.onRefresh.addListener(async () => {
 				await ZoteroPane.itemSelected();
 			});
+			// Also update the count when rows are added or removed by notifier events with
+			// nothing selected (e.g., items downloaded during a sync). Debounced so that the
+			// item pane doesn't re-render within the notifier dispatch or once per event in
+			// a burst of changes.
+			let updateUnselectedCount = Zotero.Utilities.debounce(() => {
+				if (!ZoteroPane.itemsView.selection.count) {
+					ZoteroPane.itemPane.render();
+				}
+			}, 100);
+			ZoteroPane.itemsView.onRowCountChange.addListener(() => {
+				if (!ZoteroPane.itemsView.selection.count) {
+					updateUnselectedCount();
+				}
+			});
 			ZoteroPane.itemsView.waitForLoad().then(() => Zotero.uiIsReady());
 
 			ItemTreeMenuBar.setItemTreeSortKeys(ZoteroPane.itemsView);
@@ -1633,7 +1661,10 @@ var ZoteroPane = new function () {
 				dragAndDrop: true,
 				multiSelect: true
 			});
-			collectionsTree.firstChild.addEventListener("focus", ZoteroPane.collectionsView.recordCollectionTreeFocus);
+			let treeElem = collectionsTree.firstChild;
+			let focusListener = ZoteroPane.collectionsView.recordCollectionTreeFocus;
+			treeElem.addEventListener("focus", focusListener);
+			_collectionsTreeFocusListener = [treeElem, focusListener];
 		}
 		catch (e) {
 			Zotero.logError(e);
@@ -1877,6 +1908,11 @@ var ZoteroPane = new function () {
 		await this.itemsView.changeCollectionTreeRows(collectionTreeRows);
 		
 		Zotero.Prefs.set('lastViewedFolder', collectionTreeRows[0].id);
+		// The focused row is the one just clicked, whereas collectionTreeRows is in tree order
+		let focusedRow = this.collectionsView.selectedTreeRow;
+		if (focusedRow && focusedRow.isCollection()) {
+			Zotero.Collections.addToRecent(focusedRow.ref);
+		}
 	});
 
 
@@ -1907,15 +1943,15 @@ var ZoteroPane = new function () {
 	/**
 	 * Prompt to save changes in the open saved-search editor and close it
 	 *
-	 * If the search being edited was deleted or trashed, the editor is closed without
-	 * a prompt, since there's nothing left to save the changes to.
+	 * If the editor has no changes to save, or if the search being edited was deleted or
+	 * trashed, leaving nothing to save the changes to, the editor is closed without a prompt.
 	 *
 	 * @return {Promise<Boolean>} - False if the user chose Cancel, leaving the editor open
 	 */
 	this._confirmCloseSavedSearchEditor = async function () {
 		let deck = document.getElementById('zotero-advanced-search-pane-deck');
 		let editedSearch = Zotero.Searches.get(deck.pane.editedSearchID);
-		if (!editedSearch || editedSearch.deleted) {
+		if (!editedSearch || editedSearch.deleted || !deck.pane.hasChanges) {
 			await deck.pane.cancel();
 			return true;
 		}
@@ -2026,9 +2062,12 @@ var ZoteroPane = new function () {
 	 * @param {String} [mode='fields'] - The quick search mode to reproduce
 	 */
 	this.openAdvancedSearchFromQuickSearch = async function (searchText, mode = 'fields') {
-		// Split into words (keeping quoted phrases intact), as the quick search does
-		let parts = Zotero.SearchConditions.parseSearchString(searchText);
-		if (!parts.length) {
+		// Conditions written in the query ("tag:foo") become conditions in the
+		// search; what's left is split into words (keeping quoted phrases
+		// intact), as the quick search does
+		let { tree, text } = Zotero.SearchQuery.parse(searchText);
+		let parts = Zotero.SearchConditions.parseSearchString(text);
+		if (!parts.length && !tree) {
 			await this.toggleAdvancedSearchState('open');
 			return;
 		}
@@ -2044,6 +2083,13 @@ var ZoteroPane = new function () {
 		// with "all": Title/Creator/Year and All Fields & Tags each map to a single
 		// condition, Everything to an "any" group of Any Field plus full-text.
 		// Title/Creator/Year matches only top-level items, so set the result level to item.
+		if (tree) {
+			// The words are joined to the conditions with "all", so an "any"
+			// query becomes a group rather than something they're OR'd into
+			Zotero.SearchQuery.addToSearch(search, parts.length && tree.joinMode === 'any'
+				? { joinMode: 'all', children: [tree] }
+				: tree);
+		}
 		if (mode === 'titleCreatorYear') {
 			search.addCondition('resultLevel', 'item');
 		}
@@ -2182,8 +2228,12 @@ var ZoteroPane = new function () {
 	
 	
 	this.getCollectionTreeRow = function () {
-		throw new Error("ZoteroPane.getCollectionTreeRow() was removed "
-			+ "-- use ZoteroPane.getCollectionTreeRows()");
+		if (!this.collectionsView) {
+			return false;
+		}
+		this.collectionsView._requireSingleSelection("ZoteroPane.getCollectionTreeRow()",
+			"ZoteroPane.getCollectionTreeRows()");
+		return this.getCollectionTreeRows()[0] || false;
 	}
 	
 	
@@ -3193,13 +3243,6 @@ var ZoteroPane = new function () {
 	}
 	
 	
-	this.handleSearchInput = function (textbox, event) {
-		if (textbox.searchTextbox.value.indexOf('"') != -1) {
-			this.setItemsPaneMessage(Zotero.getString('advancedSearchMode'));
-		}
-	}
-	
-	
 	/**
 	 * @return {Promise}
 	 */
@@ -3209,18 +3252,40 @@ var ZoteroPane = new function () {
 		}
 		var search = document.getElementById('zotero-tb-search');
 		var searchVal = search.searchTextbox.value;
-		if (!runAdvanced && searchVal.indexOf('"') != -1) {
+		if (!runAdvanced && Zotero.SearchQuery.hasOpenQuote(searchVal)) {
 			return;
 		}
 		var spinner = document.getElementById('zotero-tb-search-spinner');
 		spinner.setAttribute("status", "animate");
 		spinner.style.visibility = 'visible';
-		await this.itemsView.setFilter('search', searchVal);
+		// A query with conditions in it ("by:smith crispr") filters by those
+		// and matches whatever text is left over the way the current mode
+		// does; anything else is text to search for, as typed
+		// Each selected row scopes the query to its own library, so the query
+		// carries none of its own -- with one, a multi-library selection would
+		// match only in that library
+		let query = Zotero.SearchQuery.getSearch(searchVal, {
+			mode: Zotero.Prefs.get('search.quicksearch-mode')
+		});
+		if (query) {
+			this._quickSearchIsQuery = true;
+			await this.itemsView.setFilter('search', '');
+			await this.itemsView.setFilter('advanced-search', query);
+		}
+		else {
+			// Only clear a search this set, so an open Advanced Search keeps
+			// its own
+			if (this._quickSearchIsQuery) {
+				this._quickSearchIsQuery = false;
+				await this.itemsView.setFilter('advanced-search', null);
+			}
+			// A condition whose value hasn't been typed yet is left out of the
+			// text, so completing a condition name doesn't search for it
+			await this.itemsView.setFilter('search',
+				Zotero.SearchQuery.parse(searchVal).text);
+		}
 		spinner.style.removeProperty("visibility");
 		spinner.removeAttribute("status");
-		if (runAdvanced) {
-			this.clearItemsPaneMessage();
-		}
 	};
 	
 	
@@ -3239,9 +3304,10 @@ var ZoteroPane = new function () {
 
 
 	var _syncRemindersObserverID = null;
+	var _apiKeyObserverID = null;
 	this.initSyncReminders = function (startup) {
-		if (startup) {
-			Zotero.Notifier.registerObserver(
+		if (startup && !_apiKeyObserverID) {
+			_apiKeyObserverID = Zotero.Notifier.registerObserver(
 				{
 					notify: (event) => {
 						// When the API Key is deleted we need to add an observer
@@ -3491,8 +3557,10 @@ var ZoteroPane = new function () {
 	};
 	
 	this.getSelectedLibraryID = function () {
-		throw new Error("ZoteroPane.getSelectedLibraryID() was removed "
-			+ "-- use ZoteroPane.getSelectedLibraryIDs()");
+		this.collectionsView._requireSingleSelection("ZoteroPane.getSelectedLibraryID()",
+			"ZoteroPane.getSelectedLibraryIDs()");
+		var libraryIDs = this.getSelectedLibraryIDs();
+		return libraryIDs.length ? libraryIDs[0] : false;
 	}
 
 
@@ -3507,9 +3575,10 @@ var ZoteroPane = new function () {
 	}
 
 
-	this.getSelectedCollection = function () {
-		throw new Error("ZoteroPane.getSelectedCollection() was removed "
-			+ "-- use ZoteroPane.getSelectedCollections()");
+	this.getSelectedCollection = function (asID) {
+		this.collectionsView._requireSingleSelection("ZoteroPane.getSelectedCollection()",
+			"ZoteroPane.getSelectedCollections()");
+		return this.getSelectedCollections(asID)[0];
 	}
 
 
@@ -3518,9 +3587,11 @@ var ZoteroPane = new function () {
 	}
 
 
-	function getSelectedSavedSearch() {
-		throw new Error("ZoteroPane.getSelectedSavedSearch() was removed "
-			+ "-- use ZoteroPane.getSelectedSavedSearches()");
+	function getSelectedSavedSearch(asID) {
+		this.collectionsView._requireSingleSelection("ZoteroPane.getSelectedSavedSearch()",
+			"ZoteroPane.getSelectedSavedSearches()");
+		var searches = this.getSelectedSavedSearches(asID);
+		return searches.length ? searches[0] : false;
 	}
 
 
@@ -3529,9 +3600,14 @@ var ZoteroPane = new function () {
 	}
 
 
-	this.getSelectedGroup = function () {
-		throw new Error("ZoteroPane.getSelectedGroup() was removed -- filter "
-			+ "ZoteroPane.getCollectionTreeRows() by isGroup()");
+	this.getSelectedGroup = function (asID) {
+		this.collectionsView._requireSingleSelection("ZoteroPane.getSelectedGroup()",
+			"ZoteroPane.getCollectionTreeRows() filtered by isGroup()");
+		var group = this.getCollectionTreeRows().find(row => row.isGroup());
+		if (group) {
+			return asID ? group.ref.id : group.ref;
+		}
+		return false;
 	}
 	
 	
@@ -4135,7 +4211,12 @@ var ZoteroPane = new function () {
 			{
 				getContext: () => ({
 					get collectionTreeRow() {
-						throw new Error("collectionTreeRow was removed -- use collectionTreeRows");
+						if (collectionTreeRows.length > 1) {
+							throw new Error("collectionTreeRow was removed -- use collectionTreeRows");
+						}
+						Zotero.Plugins.warnRemovedAPICall("Menu context collectionTreeRow",
+							"collectionTreeRows");
+						return collectionTreeRows[0];
 					},
 					collectionTreeRows,
 					tabType: "library",
@@ -4681,7 +4762,12 @@ var ZoteroPane = new function () {
 			{
 				getContext: () => ({
 					get collectionTreeRow() {
-						throw new Error("collectionTreeRow was removed -- use collectionTreeRows");
+						if (collectionTreeRows.length > 1) {
+							throw new Error("collectionTreeRow was removed -- use collectionTreeRows");
+						}
+						Zotero.Plugins.warnRemovedAPICall("Menu context collectionTreeRow",
+							"collectionTreeRows");
+						return collectionTreeRows[0];
 					},
 					collectionTreeRows,
 					items,
@@ -4830,6 +4916,19 @@ var ZoteroPane = new function () {
 		}
 	};
 
+	
+	function _getCollectionPathLabel(collection) {
+		var names = [collection.name];
+		var parentID = collection.parentID;
+		while (parentID) {
+			let parent = Zotero.Collections.get(parentID);
+			names.unshift(parent.name);
+			parentID = parent.parentID;
+		}
+		return names.join(' \u203A ');
+	}
+	
+	
 	this.buildAddItemToCollectionMenu = function (event, items = this.getSelectedItems()) {
 		if (event.target !== event.currentTarget) return;
 		let popup = event.target;
@@ -4854,6 +4953,27 @@ var ZoteroPane = new function () {
 			throw new Error('All items must be the same library');
 		}
 		
+		let containsItems = collection => items.every(item => collection.hasItem(item));
+		
+		// Recently used collections above the full list, skipping any that already contain
+		// all the items so that every slot is a usable target
+		let recent = Zotero.Collections.getRecent(libraryID)
+			.filter(collection => !containsItems(collection))
+			.slice(0, RECENT_COLLECTIONS_SHOWN);
+		if (recent.length) {
+			let menuitems = recent.map((collection) => {
+				let menuitem = document.createXULElement('menuitem');
+				// Full path, since collections in different parts of the tree can share a name
+				menuitem.setAttribute('label', _getCollectionPathLabel(collection));
+				menuitem.setAttribute('image', collection.treeViewImage);
+				menuitem.classList.add('menuitem-iconic');
+				menuitem.addEventListener('command',
+					() => this.addItemsToCollection(items, collection));
+				return menuitem;
+			});
+			popup.append(...menuitems, document.createXULElement('menuseparator'));
+		}
+		
 		let collections = Zotero.Collections.getByLibrary(libraryID);
 		for (let col of collections) {
 			let menuItem = Zotero.Utilities.Internal.createMenuForTarget(
@@ -4866,7 +4986,7 @@ var ZoteroPane = new function () {
 						event.stopPropagation();
 					}
 				},
-				collection => items.every(item => collection.hasItem(item))
+				containsItems
 			);
 			popup.append(menuItem);
 		}
@@ -4899,6 +5019,7 @@ var ZoteroPane = new function () {
 			);
 			await collection.addItems(ids);
 		});
+		Zotero.Collections.addToRecent(collection);
 	};
 
 

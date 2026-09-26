@@ -1185,6 +1185,68 @@ describe("ZoteroPane", function () {
 		});
 	});
 
+	describe("#buildAddItemToCollectionMenu()", function () {
+		var popup;
+		
+		before(function () {
+			popup = doc.getElementById('zotero-add-to-collection-popup');
+		});
+		
+		beforeEach(async function () {
+			// Leave the tree on the library root, so that a collection created later in a test
+			// can't be recorded by the reselection that follows adding a row
+			await selectLibrary(win);
+		});
+		
+		after(async function () {
+			// Don't leave a multiple selection behind for later tests
+			await selectLibrary(win);
+		});
+		
+		it("should record the selected collection as recently used", async function () {
+			var collection = await createDataObject('collection');
+			await zp.collectionsView.selectByID("C" + collection.id);
+			await waitForItemsLoad(win);
+			
+			assert.equal(Zotero.Collections.getRecent()[0], collection);
+		});
+		
+		it("should record the collection added to a multiple selection", async function () {
+			var c1 = await createDataObject('collection', { name: 'AAA recent' });
+			var c2 = await createDataObject('collection', { name: 'ZZZ recent' });
+			var cv = zp.collectionsView;
+			await cv.selectByID("C" + c1.id);
+			await waitForItemsLoad(win);
+			cv.selection.toggleSelect(cv.getRowIndexByID("C" + c2.id));
+			await zp.onCollectionSelected();
+			await zp.itemsView.waitForLoad();
+			
+			assert.equal(Zotero.Collections.getRecent()[0], c2);
+		});
+		
+		it("should offer recently used collections above the full list", async function () {
+			var parent = await createDataObject('collection', { name: 'Parent' });
+			var child = await createDataObject('collection', { name: 'Child', parentID: parent.id });
+			var item = await createDataObject('item', { collections: [parent.id] });
+			
+			Zotero.Collections.addToRecent(parent);
+			Zotero.Collections.addToRecent(child);
+			
+			zp.buildAddItemToCollectionMenu({ target: popup, currentTarget: popup }, [item]);
+			
+			// Recent collections follow New Collection and a separator, by full path
+			var nodes = [...popup.children];
+			var recent = [];
+			for (let node of nodes.slice(nodes.findIndex(n => n.tagName == 'menuseparator') + 1)) {
+				if (node.tagName == 'menuseparator') break;
+				recent.push(node.getAttribute('label'));
+			}
+			assert.include(recent, 'Parent \u203A Child');
+			// The parent already contains the item, so it isn't offered
+			assert.notInclude(recent, 'Parent');
+		});
+	});
+	
 	describe("#buildItemContextMenu()", function () {
 		it("shouldn't show export or bib options for multiple standalone file attachments without notes", async function () {
 			var item1 = await importFileAttachment('test.png');
@@ -1751,15 +1813,19 @@ describe("ZoteroPane", function () {
 			"zotero-tb-sync",
 			"zotero-tb-tabs-menu"
 		];
-		beforeEach(async function () {
-			// The focus traversal relies on focus/blur events, which only fire when
-			// the window is active. It's normally active, but can intermittently lose
-			// activation in CI, so try to restore it if needed. (This may not work.)
+		// The focus traversal relies on focus/blur events, which only fire when the
+		// window is active. It's normally active, but can lose activation --
+		// intermittently in CI, or when another app is focused during a local run --
+		// so restore it if necessary and report whether that worked.
+		async function activatePaneWindow() {
 			if (Services.focus.activeWindow !== win) {
 				win.focus();
 				await Zotero.Promise.delay(100);
 			}
+			return Services.focus.activeWindow === win;
+		}
 
+		beforeEach(async function () {
 			// Reset collection search field state
 			let collectionSearchField = doc.getElementById("zotero-collections-search");
 			let collectionSearchButton = doc.getElementById("zotero-tb-collections-search");
@@ -1772,6 +1838,12 @@ describe("ZoteroPane", function () {
 		});
 
 		it("should shift-tab across the zotero pane", async function () {
+			// Without an active window, the traversal waits for events that never come
+			if (!await activatePaneWindow()) {
+				Zotero.debug("Skipping test -- pane window isn't active");
+				this.skip();
+			}
+
 			// Start from the Advanced Search button (the last focusable element in the
 			// search field) so the first shift-tab exercises advanced button -> search field
 			let advancedButton = doc.getElementById('zotero-tb-search-advanced-button');
@@ -1822,6 +1894,12 @@ describe("ZoteroPane", function () {
 		});
 
 		it("should tab across the zotero pane", async function () {
+			// Without an active window, the traversal waits for events that never come
+			if (!await activatePaneWindow()) {
+				Zotero.debug("Skipping test -- pane window isn't active");
+				this.skip();
+			}
+
 			win.Zotero_Tabs.moveFocus("current");
 			let reversed = [...sequence].reverse();
 			for (let id of reversed) {

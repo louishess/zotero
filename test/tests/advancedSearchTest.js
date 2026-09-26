@@ -68,6 +68,36 @@ describe("Advanced Search", function () {
 		assert.isFalse(row.setAdvancedSearch(null));
 	});
 	
+	it("should seed conditions written in the quick search query", async function () {
+		var match = await createDataObject('item', { title: "alpha beta" });
+		match.addTag('zztag');
+		await match.saveTx();
+		var wrongTag = await createDataObject('item', { title: "alpha beta" });
+		await wrongTag.saveTx();
+
+		await zp.openAdvancedSearchFromQuickSearch('tag:zztag alpha', 'fields');
+		var iv = zp.itemsView;
+		await iv.waitForLoad();
+
+		var conditions = Object.values(deck.pane.search.getConditions());
+		var tag = conditions.find(c => c.condition === 'tag');
+		assert.isDefined(tag);
+		assert.equal(tag.value, 'zztag');
+		assert.equal(tag.operator, 'is');
+		// The rest of the query is still words to match
+		assert.sameMembers(
+			conditions.filter(c => c.condition === 'anyField').map(c => c.value),
+			['alpha']
+		);
+
+		assert.equal(iv.rowCount, 1);
+		assert.isNumber(iv.getRowIndexByID(match.id));
+
+		await zp.setAdvancedSearchState('closed');
+		await iv.waitForLoad();
+		await Zotero.Items.erase([match.id, wrongTag.id]);
+	});
+
 	it("should seed from the quick search text and reset on close", async function () {
 		var match = await createDataObject('item', { title: "alpha beta" });
 		var partial = await createDataObject('item', { title: "alpha gamma" });
@@ -698,6 +728,49 @@ describe("Advanced Search", function () {
 		await selectLibrary(win);
 	});
 
+	it("should close the saved-search editor without prompting when nothing was changed", async function () {
+		var saved = await createDataObject('search', { name: "UnchangedEditing" });
+		await select(win, saved);
+		await zp.setSavedSearchEditorState('open');
+		assert.equal(deck.selectedSearchType, 'saved');
+
+		let stub = sinon.stub().returns(1); // Cancel
+		let promptService = win.Services.prompt;
+		win.Services.prompt = { confirmEx: stub };
+		try {
+			await selectLibrary(win);
+			assert.equal(stub.callCount, 0);
+			assert.equal(deck.state, 'closed');
+		}
+		finally {
+			win.Services.prompt = promptService;
+		}
+
+		await saved.eraseTx();
+	});
+
+	it("should prompt when only the saved search's name was changed", async function () {
+		var saved = await createDataObject('search', { name: "RenameWhileEditing" });
+		await select(win, saved);
+		await zp.setSavedSearchEditorState('open');
+
+		deck.pane.querySelector('#saved-search-name').value = "RenameWhileEditing 2";
+
+		let stub = sinon.stub().returns(0); // Save
+		let promptService = win.Services.prompt;
+		win.Services.prompt = { confirmEx: stub };
+		try {
+			await selectLibrary(win);
+			assert.equal(stub.callCount, 1);
+			assert.equal(saved.name, "RenameWhileEditing 2");
+		}
+		finally {
+			win.Services.prompt = promptService;
+		}
+
+		await saved.eraseTx();
+	});
+
 	it("should revert to the edited search without re-prompting when canceling", async function () {
 		var search1 = await createDataObject('search', { name: "CancelEditing1" });
 		var search2 = await createDataObject('search', { name: "CancelEditing2" });
@@ -706,6 +779,11 @@ describe("Advanced Search", function () {
 		await select(win, search1);
 		await zp.setSavedSearchEditorState('open');
 		assert.equal(deck.selectedSearchType, 'saved');
+
+		// Edit the editor's working copy, so that closing it prompts
+		var searchBox = deck.pane.querySelector('zoterosearch');
+		searchBox.querySelector('.conditions').firstChild.querySelector('#valuefield').value = 'edited';
+		searchBox.updateSearch();
 
 		// zoteroPane.js uses the pane window's Services, so stub there. Set it before
 		// touching the selection so no prompt can reach the real (modal) service.
@@ -1032,6 +1110,27 @@ describe("Advanced Search", function () {
 				assert.equal(searchCondition.selectedCondition, 'language');
 			});
 
+			it("should select an attachment condition by its full name", function () {
+				var s = new Zotero.Search();
+				s.libraryID = Zotero.Libraries.userLibraryID;
+				s.addCondition('title', 'is', '');
+				pane.search = s;
+
+				var searchCondition = conditions.firstChild;
+				var conditionsMenu = searchCondition.querySelector('#conditionsmenu');
+
+				// The Attachment submenu shows a short label, but the menulist shows the
+				// full name, which is what gets typed
+				let menuitem = conditionsMenu.querySelector('menuitem[value="fileTypeID"]');
+				assert.notEqual(
+					menuitem.label,
+					Zotero.SearchConditions.getLocalizedName('fileTypeID')
+				);
+				// The spaces in the name would otherwise open the menu (see customElements.js)
+				typeInMenu(conditionsMenu, 'attachment file t');
+				assert.equal(searchCondition.selectedCondition, 'fileTypeID');
+			});
+
 			it("should cycle through matches when the same letter is typed repeatedly", function () {
 				var s = new Zotero.Search();
 				s.libraryID = Zotero.Libraries.userLibraryID;
@@ -1241,7 +1340,7 @@ describe("Advanced Search", function () {
 		});
 
 		describe("Collection", function () {
-			it("should show only collections", async function () {
+			it("should show only collections, with subcollections in submenus", async function () {
 				var col1 = await createDataObject('collection', { name: "A" });
 				var col2 = await createDataObject('collection', { name: "C", parentID: col1.id });
 				var col3 = await createDataObject('collection', { name: "D", parentID: col2.id });
@@ -1270,30 +1369,102 @@ describe("Advanced Search", function () {
 				}
 				
 				assert.isFalse(valueMenu.hidden);
-				// Only the collections, with the saved searches no longer mixed in
-				assert.equal(valueMenu.itemCount, 4);
-				// Subcollections are indented via a margin on the icon
-				function getIndent(menuitem) {
-					return win.getComputedStyle(menuitem.querySelector('.menu-icon'))
-						.marginInlineStart;
-				}
-				var valueMenuItem = valueMenu.getItemAtIndex(1);
-				assert.equal(valueMenuItem.getAttribute('label'), col2.name);
-				assert.equal(valueMenuItem.getAttribute('value'), "C" + col2.key);
-				assert.equal(getIndent(valueMenuItem), '16px');
-				valueMenuItem = valueMenu.getItemAtIndex(2);
-				assert.equal(valueMenuItem.getAttribute('label'), col3.name);
-				assert.equal(valueMenuItem.getAttribute('value'), "C" + col3.key);
-				assert.equal(getIndent(valueMenuItem), '32px');
-				var values = [];
-				for (let i = 0; i < valueMenu.itemCount; i++) {
-					values.push(valueMenu.getItemAtIndex(i).getAttribute('value'));
-				}
+				// Only the two top-level collections
+				assert.equal(valueMenu.itemCount, 2);
+				var col1Menu = valueMenu.getItemAtIndex(0);
+				assert.equal(col1Menu.getAttribute('label'), col1.name);
+				assert.equal(valueMenu.getItemAtIndex(1).getAttribute('label'), col4.name);
+				
+				// Subcollections are nested below their parents
+				var col2Menu = col1Menu.menupopup.querySelector(`menu[value="${col2.treeViewID}"]`);
+				assert.equal(col2Menu.getAttribute('label'), col2.name);
+				var col3Item = col2Menu.menupopup
+					.querySelector(`menuitem[value="${col3.treeViewID}"]`);
+				assert.equal(col3Item.getAttribute('label'), col3.name);
+				
+				var values = [...valueMenu.querySelectorAll('menu, menuitem')]
+					.map(node => node.getAttribute('value'));
 				assert.notInclude(values, "S" + search1.key);
 				assert.notInclude(values, "S" + search2.key);
 				
+				// Selecting a subcollection shows it on the menulist and stores its key
+				col3Item.doCommand();
+				assert.equal(valueMenu.label, col3.name);
+				// The path is out of the way in a tooltip, since the menulist rarely has room
+				assert.equal(
+					valueMenu.getAttribute('tooltiptext'),
+					`${col1.name} \u203A ${col2.name} \u203A ${col3.name}`
+				);
+				assert.isTrue(col3Item.hasAttribute('checked'));
+				assert.equal(searchCondition.getConditionData().value, col3.key);
+				
 				await Zotero.Collections.erase([col1.id, col2.id, col3.id, col4.id]);
 				await Zotero.Searches.erase([search1.id, search2.id]);
+			});
+			
+			it("should select a subcollection in a submenu by typing its name", async function () {
+				var col1 = await createDataObject('collection', { name: "A" });
+				var col2 = await createDataObject('collection', { name: "Deep", parentID: col1.id });
+				
+				var s = new Zotero.Search();
+				s.libraryID = Zotero.Libraries.userLibraryID;
+				s.addCondition('title', 'is', '');
+				pane.search = s;
+				
+				var searchCondition = conditions.firstChild;
+				var conditionsMenu = searchCondition.querySelector('#conditionsmenu');
+				var valueMenu = searchCondition.querySelector('#valuemenu');
+				
+				// Select 'Collection' condition
+				for (let i = 0; i < conditionsMenu.itemCount; i++) {
+					let menuitem = conditionsMenu.getItemAtIndex(i);
+					if (menuitem.value == 'collection') {
+						menuitem.click();
+						break;
+					}
+				}
+				assert.equal(valueMenu.label, col1.name);
+				
+				// "Deep" is in a submenu, so the menulist's own find-as-you-type can't reach it
+				valueMenu.dispatchEvent(new win.KeyboardEvent('keydown', {
+					key: 'd',
+					bubbles: true,
+					cancelable: true
+				}));
+				assert.equal(valueMenu.label, col2.name);
+				assert.equal(searchCondition.getConditionData().value, col2.key);
+				
+				await Zotero.Collections.erase([col1.id, col2.id]);
+			});
+			
+			it("should keep matching by name after the menu is rebuilt", async function () {
+				var col1 = await createDataObject('collection', { name: "Apple" });
+				var col2 = await createDataObject('collection', { name: "Banana" });
+				
+				var s = new Zotero.Search();
+				s.libraryID = Zotero.Libraries.userLibraryID;
+				s.addCondition('collection', 'is', col1.key);
+				pane.search = s;
+				
+				var searchCondition = conditions.firstChild;
+				var conditionsMenu = searchCondition.querySelector('#conditionsmenu');
+				var valueMenu = searchCondition.querySelector('#valuemenu');
+				
+				// Switching to another condition and back replaces the menu
+				conditionsMenu.querySelector('menuitem[value="title"]').doCommand();
+				conditionsMenu.querySelector('menuitem[value="collection"]').doCommand();
+				
+				for (let ch of 'banana') {
+					valueMenu.dispatchEvent(new win.KeyboardEvent('keydown', {
+						key: ch,
+						bubbles: true,
+						cancelable: true
+					}));
+				}
+				assert.equal(valueMenu.label, col2.name);
+				assert.equal(searchCondition.getConditionData().value, col2.key);
+				
+				await Zotero.Collections.erase([col1.id, col2.id]);
 			});
 			
 			it("should update when the library is changed", async function () {
@@ -1320,14 +1491,9 @@ describe("Advanced Search", function () {
 						break;
 					}
 				}
-				for (let i = 0; i < valueMenu.itemCount; i++) {
-					let menuitem = valueMenu.getItemAtIndex(i);
-					if (menuitem.getAttribute('value') == "C" + collection1.key) {
-						menuitem.click();
-						break;
-					}
-				}
-				assert.equal(valueMenu.value, "C" + collection1.key);
+				valueMenu.querySelector(`menuitem[value="${collection1.treeViewID}"]`).doCommand();
+				assert.equal(valueMenu.label, collection1.name);
+				assert.equal(searchCondition.getConditionData().value, collection1.key);
 				
 				// Switch to the group library in the collection tree, which changes
 				// the search library and re-renders the conditions
@@ -1336,13 +1502,14 @@ describe("Advanced Search", function () {
 				var values = [];
 				searchCondition = conditions.firstChild;
 				valueMenu = searchCondition.querySelector('#valuemenu');
-				assert.equal(valueMenu.value, "C" + collection2.key);
+				assert.equal(valueMenu.label, collection2.name);
+				assert.equal(searchCondition.getConditionData().value, collection2.key);
 				for (let i = 0; i < valueMenu.itemCount; i++) {
 					let menuitem = valueMenu.getItemAtIndex(i);
 					values.push(menuitem.getAttribute('value'));
 				}
-				assert.notInclude(values, "C" + collection1.key);
-				assert.include(values, "C" + collection2.key);
+				assert.notInclude(values, collection1.treeViewID);
+				assert.include(values, collection2.treeViewID);
 				
 				await selectLibrary(win);
 

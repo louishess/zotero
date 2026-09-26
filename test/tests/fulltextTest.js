@@ -298,8 +298,37 @@ describe("Zotero.FullText", function () {
 
 		it("should keep content searchable after optimizing the index", async function () {
 			let item = await createTextAttachment("optimizable content");
-			await Zotero.FullText.optimizeContentIndex();
+			// Failures are logged rather than thrown, so make sure the merge ran cleanly
+			let logError = sinon.spy(Zotero, 'logError');
+			try {
+				await Zotero.FullText.optimizeContentIndex({ force: true });
+			}
+			finally {
+				logError.restore();
+			}
+			assert.isTrue(logError.notCalled);
 			assert.include(await contentSearch(item, 'optimizable'), item.id);
+		});
+
+		it("should start each table's merge with a negative page count", async function () {
+			// A positive count only merges levels that already have enough segments of their own;
+			// SQLite requires a negative one to start a merge across all of them
+			await createTextAttachment("mergeprotocol content");
+			let queryAsync = sinon.spy(Zotero.DB, 'queryAsync');
+			try {
+				await Zotero.FullText.optimizeContentIndex({ force: true });
+			}
+			finally {
+				queryAsync.restore();
+			}
+			let merges = queryAsync.args.map(args => args[0])
+				.filter(sql => typeof sql == 'string' && sql.includes("VALUES('merge'"));
+			assert.isNotEmpty(merges);
+			for (let table of ['fulltextContent', 'fulltextContentCJK', 'fulltextNotes',
+					'fulltextNotesCJK']) {
+				let first = merges.find(sql => sql.includes(`ftindex.${table}(`));
+				assert.include(first, "VALUES('merge', -", table);
+			}
 		});
 
 		it("should keep content searchable after vacuuming the index", async function () {
@@ -394,6 +423,14 @@ describe("Zotero.FullText", function () {
 				assert.notInclude(results, cjkOnly.id);
 			});
 
+			it("shouldn't optimize the content index after indexing a note", async function () {
+				// Clear the count of items indexed since the last optimize
+				await Zotero.FullText.optimizeContentIndex({ force: true });
+				await createNote("<p>zqnnunoptimized content</p>");
+				await Zotero.FullText.processNoteIndexQueue();
+				assert.isFalse(await Zotero.FullText.optimizeContentIndex());
+			});
+
 			it("should exclude a matching note with doesNotContain", async function () {
 				let item = await createNote("<p>zqnnexcludable content</p>");
 				await Zotero.FullText.processNoteIndexQueue();
@@ -457,6 +494,16 @@ describe("Zotero.FullText", function () {
 					((await Zotero.Fulltext.getIndexedState(item))),
 					Zotero.Fulltext.INDEX_STATE_INDEXED
 				);
+			})
+			
+			it("should index an HTML file", async function () {
+				var item = await importFileAttachment('test.html');
+				assert.equal(
+					((await Zotero.Fulltext.getIndexedState(item))),
+					Zotero.Fulltext.INDEX_STATE_INDEXED
+				);
+				var content = await Zotero.File.getContentsAsync(Zotero.Fulltext.getItemCacheFile(item).path);
+				assert.include(content, 'This is a test.');
 			})
 			
 			it("should skip indexing of a PDF if fulltext.textMaxLength is 0", async function () {

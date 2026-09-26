@@ -1989,6 +1989,20 @@ describe("CollectionViewItemTree", function () {
 				assert.equal(itemsView.getRow(searchRowIndex).type, 'search');
 			});
 
+			it("shouldn't show a value in Added By/Modified By for trashed collections and searches", async function () {
+				let collection = await createDataObject('collection', { deleted: true });
+				let search = await createDataObject('search', { deleted: true });
+
+				await selectTrash(win);
+
+				for (let obj of [collection, search]) {
+					let row = itemsView.getRowIndexByID(obj.treeViewID);
+					assert.isNumber(row);
+					assert.strictEqual(itemsView.getCellText(row, 'addedBy'), "");
+					assert.strictEqual(itemsView.getCellText(row, 'lastModifiedBy'), "");
+				}
+			});
+
 			it("shouldn't show trashed collections or searches when an advanced search is active", async function () {
 				let item = await createDataObject('item', { title: "advancedTrashMatch", deleted: true });
 				let collection = await createDataObject('collection', { name: "advancedTrashMatch", deleted: true });
@@ -2259,6 +2273,51 @@ describe("CollectionViewItemTree", function () {
 			// New parent should be open
 			assert.isTrue(itemsView.isContainerOpen(itemsView.getRowIndexByID(item2.id)));
 			assert.isFalse(itemsView.isContainerEmpty(itemsView.getRowIndexByID(item2.id)));
+		});
+		
+		it("should move a child item when the drag only allows copying", async function () {
+			var collection = await createDataObject('collection');
+			await waitForItemsLoad(win);
+			var item1 = await createDataObject('item', { title: "A", collections: [collection.id] });
+			var item2 = await createDataObject('item', { title: "B", collections: [collection.id] });
+			var attachment = await importFileAttachment('test.pdf', { parentItemID: item1.id });
+			
+			await itemsView.selectItem(attachment.id);
+			
+			var dataTransfer = {
+				dropEffect: 'copy',
+				effectAllowed: 'copy',
+				types: ['zotero/item'],
+				getData: function (type) {
+					if (type == 'zotero/item') {
+						return attachment.id + "";
+					}
+					return "";
+				},
+				mozItemCount: 1
+			};
+			var index = itemsView.getRowIndexByID(item2.id);
+			var rowEl = {
+				classList: { contains: () => false },
+				getBoundingClientRect: () => ({ y: 0, height: 100 })
+			};
+			Zotero.DragDrop.currentDragSource = itemsView.collectionTreeRows[0];
+			itemsView.onDragOver({
+				preventDefault: () => {},
+				stopPropagation: () => {},
+				currentTarget: rowEl,
+				target: rowEl,
+				clientY: 50,
+				dataTransfer
+			}, index);
+			// The requested move has to be sent as an allowed effect for the drop to happen
+			assert.equal(dataTransfer.dropEffect, 'copy');
+			
+			var promise = itemsView.waitForSelect();
+			await drop(index, 0, dataTransfer);
+			await promise;
+			
+			assert.equal(attachment.parentItemID, item2.id);
 		});
 		
 		it("should move a child item from last item in list to another", async function () {

@@ -268,15 +268,9 @@ describe("Zotero.DB", function () {
 		
 		it("should roll back on error", async function () {
 			await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (1)");
-			try {
-				await Zotero.DB.executeTransaction(async function () {
-					await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (2)");
-					throw 'Aborting transaction -- ignore';
-				});
-			}
-			catch (e) {
-				if (typeof e != 'string' || !e.startsWith('Aborting transaction')) throw e;
-			}
+			await executeTransactionWithForcedRollback(async function () {
+				await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (2)");
+			});
 			var count = await Zotero.DB.valueQueryAsync("SELECT COUNT(*) FROM " + tmpTable + "");
 			assert.equal(count, 1);
 			
@@ -288,23 +282,52 @@ describe("Zotero.DB", function () {
 		
 		it("should run onRollback callbacks", async function () {
 			var callbackRan = false;
-			try {
-				await Zotero.DB.executeTransaction(
-					async function () {
-						await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (1)");
-						throw 'Aborting transaction -- ignore';
-					},
-					{
-						onRollback: function () {
-							callbackRan = true;
-						}
+			await executeTransactionWithForcedRollback(
+				async function () {
+					await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (1)");
+				},
+				{
+					onRollback: function () {
+						callbackRan = true;
 					}
-				);
-			}
-			catch (e) {
-				if (typeof e != 'string' || !e.startsWith('Aborting transaction')) throw e;
-			}
+				}
+			);
 			assert.ok(callbackRan);
+			
+			await Zotero.DB.queryAsync("DROP TABLE " + tmpTable);
+		});
+		
+		it("shouldn't reject or roll back on an error in a commit callback", async function () {
+			var laterCallbackRan = false;
+			await Zotero.DB.executeTransaction(async function () {
+				await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (1)");
+				Zotero.DB.addCurrentCallback('commit', function () {
+					throw new Error("Commit callback error -- ignore");
+				});
+				Zotero.DB.addCurrentCallback('commit', function () {
+					laterCallbackRan = true;
+				});
+			});
+			var count = await Zotero.DB.valueQueryAsync("SELECT COUNT(*) FROM " + tmpTable);
+			assert.equal(count, 1);
+			assert.ok(laterCallbackRan);
+			
+			await Zotero.DB.queryAsync("DROP TABLE " + tmpTable);
+		});
+		
+		it("should discard commit callbacks from a rolled-back transaction", async function () {
+			var callbackRan = false;
+			await executeTransactionWithForcedRollback(async function () {
+				await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (1)");
+				Zotero.DB.addCurrentCallback('commit', function () {
+					callbackRan = true;
+				});
+			});
+			
+			await Zotero.DB.executeTransaction(async function () {
+				await Zotero.DB.queryAsync("INSERT INTO " + tmpTable + " VALUES (2)");
+			});
+			assert.isFalse(callbackRan);
 			
 			await Zotero.DB.queryAsync("DROP TABLE " + tmpTable);
 		});
@@ -353,6 +376,108 @@ describe("Zotero.DB", function () {
 			}
 			assert.ok(callback1Ran);
 			assert.ok(callback2Ran);
+		});
+		
+		// Corrupt a table's pages, leaving the header, the schema and both table roots
+		// readable so that the database still opens and bar can be written to
+		async function createDatabaseWithCorruptTable() {
+			let dir = await getTempDirectory();
+			let dbPath = PathUtils.join(dir, 'test.sqlite');
+			let db = new Zotero.DBConnection(dbPath);
+			await db.queryAsync("CREATE TABLE bar (a INTEGER PRIMARY KEY, b TEXT)");
+			await db.queryAsync("CREATE TABLE foo (a INTEGER PRIMARY KEY, b TEXT)");
+			await db.executeTransaction(async function () {
+				for (let i = 0; i < 500; i++) {
+					await db.queryAsync("INSERT INTO foo VALUES (?, ?)", [i, 'x'.repeat(300)]);
+				}
+			});
+			let pageSize = await db.valueQueryAsync("PRAGMA page_size");
+			await db.closeDatabase();
+			for (let suffix of ['-wal', '-shm', '-journal']) {
+				await IOUtils.remove(dbPath + suffix, { ignoreAbsent: true });
+			}
+			
+			let bytes = await IOUtils.read(dbPath);
+			for (let i = 4 * pageSize; i < bytes.length; i++) {
+				bytes[i] = 0xde;
+			}
+			await IOUtils.write(dbPath, bytes);
+			
+			db = new Zotero.DBConnection(dbPath);
+			// Corruption handling is skipped for external databases
+			db._externalDB = false;
+			return db;
+		}
+		
+		it("should detect corruption reported by the commit of a transaction", async function () {
+			let db = await createDatabaseWithCorruptTable();
+			let quitStub = sinon.stub(Zotero.Utilities.Internal, 'quit');
+			let promptService = Services.prompt;
+			// Decline the offer to recover
+			let promptStub = sinon.stub().returns(1);
+			Services.prompt = { confirmEx: promptStub };
+			var e;
+			try {
+				e = await getPromiseError(db.executeTransaction(async function () {
+					await db.queryAsync("INSERT INTO bar VALUES (1, 'written')");
+					// SQLite prohibits the commit once a statement in the transaction has
+					// hit the corrupt pages, so swallow that error the way a caller doing
+					// optional work would
+					try {
+						await db.valueQueryAsync("SELECT COUNT(*) FROM foo");
+					}
+					catch {}
+				}));
+			}
+			finally {
+				quitStub.restore();
+				Services.prompt = promptService;
+				Zotero.skipLoading = false;
+				try {
+					await db.closeDatabase();
+				}
+				catch {}
+				Zotero.hideZoteroPaneOverlays();
+			}
+			
+			// The commit is what failed, so the error arrives without the query details
+			// that queryAsync() adds to a statement error
+			assert.include(e.message, "database disk image is malformed");
+			assert.notInclude(e.message, "[QUERY:");
+			assert.equal(promptStub.callCount, 1);
+			assert.include(
+				promptStub.args[0][2],
+				Zotero.getString('db.dbCorrupted', [Zotero.appName, 'test.sqlite'])
+			);
+		});
+		
+		it("shouldn't prompt twice for one corruption error in a transaction", async function () {
+			let db = await createDatabaseWithCorruptTable();
+			let quitStub = sinon.stub(Zotero.Utilities.Internal, 'quit');
+			let promptService = Services.prompt;
+			let promptStub = sinon.stub().returns(1);
+			Services.prompt = { confirmEx: promptStub };
+			var e;
+			try {
+				// queryAsync() checks the statement error itself, and the same error then
+				// propagates out of the transaction
+				e = await getPromiseError(db.executeTransaction(async function () {
+					await db.queryAsync("SELECT COUNT(*) FROM foo");
+				}));
+			}
+			finally {
+				quitStub.restore();
+				Services.prompt = promptService;
+				Zotero.skipLoading = false;
+				try {
+					await db.closeDatabase();
+				}
+				catch {}
+				Zotero.hideZoteroPaneOverlays();
+			}
+			
+			assert.include(e.message, "database disk image is malformed");
+			assert.equal(promptStub.callCount, 1);
 		});
 	})
 	
@@ -676,6 +801,34 @@ describe("Zotero.DB", function () {
 			}
 			assert.isFalse(await IOUtils.exists(dbPath + '.repair.tmp'));
 			assert.isFalse(await IOUtils.exists(dbPath + '.damaged'));
+		});
+		
+		it("should flag the connection as read-only if the database isn't writable", async function () {
+			if (Zotero.isWin) {
+				this.skip();
+			}
+			let dir = await getTempDirectory();
+			let dbPath = PathUtils.join(dir, 'test.sqlite');
+			let db = new Zotero.DBConnection(dbPath);
+			await db.queryAsync("CREATE TABLE foo (a INT)");
+			await db.closeDatabase();
+			await IOUtils.setPermissions(dbPath, 0o444);
+			// Open through internal initialization so that the journal mode is set
+			db._externalDB = false;
+			
+			try {
+				assert.equal(await db.valueQueryAsync("SELECT COUNT(*) FROM foo"), 0);
+				assert.isTrue(db.readOnly);
+			}
+			finally {
+				await db.closeDatabase();
+				await IOUtils.setPermissions(dbPath, 0o644);
+			}
+			
+			// The flag is cleared when the database can be written again
+			await db.queryAsync("INSERT INTO foo VALUES (1)");
+			assert.isFalse(db.readOnly);
+			await db.closeDatabase();
 		});
 	});
 	
@@ -1075,6 +1228,169 @@ describe("Zotero.DB", function () {
 	});
 	
 
+	describe("#_downgradeDatabaseFromWAL()", function () {
+		it("should convert a cleanly closed WAL database to a rollback journal", async function () {
+			let dir = await getTempDirectory();
+			let dbPath = PathUtils.join(dir, 'test.sqlite');
+			let db = new Zotero.DBConnection(dbPath);
+			await db.queryAsync("PRAGMA journal_mode=WAL");
+			await db.queryAsync("CREATE TABLE foo (a INT)");
+			await db.queryAsync("INSERT INTO foo VALUES (1)");
+			await db.closeDatabase();
+			
+			assert.isTrue(await db._downgradeDatabaseFromWAL(dbPath));
+			
+			let header = await IOUtils.read(dbPath, { maxBytes: 20 });
+			assert.equal(header[18], 1);
+			assert.isFalse(await IOUtils.exists(dbPath + '-wal'));
+			try {
+				assert.equal(await db.valueQueryAsync("SELECT COUNT(*) FROM foo"), 1);
+				assert.equal(await db.valueQueryAsync("PRAGMA main.journal_mode"), 'delete');
+			}
+			finally {
+				await db.closeDatabase();
+			}
+		});
+			
+		it("should replay a non-empty WAL", async function () {
+			let dir = await getTempDirectory();
+			let dbPath = PathUtils.join(dir, 'test.sqlite');
+			let db = new Zotero.DBConnection(dbPath);
+			await db.queryAsync("PRAGMA journal_mode=WAL");
+			await db.queryAsync("CREATE TABLE foo (a INT)");
+			await db.queryAsync("INSERT INTO foo VALUES (1)");
+			// Copy the files before closing, so that the copied WAL contains uncheckpointed data
+			await IOUtils.copy(dbPath, dbPath + '.copy');
+			await IOUtils.copy(dbPath + '-wal', dbPath + '.copy-wal');
+			await db.closeDatabase(true);
+			await IOUtils.move(dbPath + '.copy', dbPath);
+			await IOUtils.move(dbPath + '.copy-wal', dbPath + '-wal');
+			assert.isAbove((await IOUtils.stat(dbPath + '-wal')).size, 0);
+			
+			let db2 = new Zotero.DBConnection(dbPath);
+			assert.isTrue(await db2._downgradeDatabaseFromWAL(dbPath));
+			try {
+				assert.equal(await db2.valueQueryAsync("SELECT COUNT(*) FROM foo"), 1);
+			}
+			finally {
+				await db2.closeDatabase();
+			}
+		});
+
+		it("should preserve the original files if the converted database fails validation", async function () {
+			let dir = await getTempDirectory();
+			let dbPath = PathUtils.join(dir, 'test.sqlite');
+			let db = new Zotero.DBConnection(dbPath);
+			await db.queryAsync("PRAGMA journal_mode=WAL");
+			await db.queryAsync("CREATE TABLE foo (a TEXT)");
+			for (let i = 0; i < 100; i++) {
+				await db.queryAsync("INSERT INTO foo VALUES (?)", "x".repeat(4000));
+			}
+			await db.closeDatabase(true);
+
+			// Reopen and make a small change, so that the WAL contains only the pages it
+			// touched, and capture the files before the WAL is checkpointed at close
+			let db2 = new Zotero.DBConnection(dbPath);
+			await db2.queryAsync("PRAGMA journal_mode=WAL");
+			await db2.queryAsync("INSERT INTO foo VALUES ('y')");
+			await IOUtils.copy(dbPath, dbPath + '.copy');
+			await IOUtils.copy(dbPath + '-wal', dbPath + '.copy-wal');
+			await db2.closeDatabase(true);
+			await IOUtils.move(dbPath + '.copy', dbPath);
+			await IOUtils.move(dbPath + '.copy-wal', dbPath + '-wal');
+
+			// Zero out a page in the middle of the database file that the WAL doesn't
+			// contain, so that both the converted copy and the database file alone fail
+			// their integrity checks
+			let bytes = await IOUtils.read(dbPath);
+			bytes.fill(0, 65536, 69632);
+			await IOUtils.write(dbPath, bytes);
+			let origSize = bytes.length;
+
+			let db3 = new Zotero.DBConnection(dbPath);
+			let e = null;
+			try {
+				await db3._downgradeDatabaseFromWAL(dbPath);
+			}
+			catch (err) {
+				e = err;
+			}
+			assert.ok(e);
+			assert.isTrue(db3.isCorruptionError(e));
+			// The original files are untouched
+			assert.isTrue(await IOUtils.exists(dbPath + '-wal'));
+			assert.equal((await IOUtils.stat(dbPath)).size, origSize);
+			let header = await IOUtils.read(dbPath, { maxBytes: 20 });
+			assert.equal(header[18], 2);
+		});
+
+		it("should apply a WAL file left beside an already-converted database", async function () {
+			let dir = await getTempDirectory();
+			let dbPath = PathUtils.join(dir, 'test.sqlite');
+			let db = new Zotero.DBConnection(dbPath);
+			await db.queryAsync("PRAGMA journal_mode=WAL");
+			await db.queryAsync("CREATE TABLE foo (a INT)");
+			await db.queryAsync("INSERT INTO foo VALUES (1)");
+			await IOUtils.copy(dbPath + '-wal', dbPath + '.wal-copy');
+			await db.closeDatabase(true);
+
+			// Convert the database, and then restore the WAL file, simulating a conversion
+			// interrupted between the file swap and the WAL removal
+			let db2 = new Zotero.DBConnection(dbPath);
+			assert.isTrue(await db2._downgradeDatabaseFromWAL(dbPath));
+			await IOUtils.move(dbPath + '.wal-copy', dbPath + '-wal');
+
+			assert.isTrue(await db2._downgradeDatabaseFromWAL(dbPath));
+			assert.isFalse(await IOUtils.exists(dbPath + '-wal'));
+			let header = await IOUtils.read(dbPath, { maxBytes: 20 });
+			assert.equal(header[18], 1);
+			try {
+				assert.equal(await db2.valueQueryAsync("SELECT COUNT(*) FROM foo"), 1);
+			}
+			finally {
+				await db2.closeDatabase();
+			}
+		});
+
+		it("should convert the target of a symlinked database file", async function () {
+			if (Zotero.isWin) {
+				this.skip();
+			}
+			let dir = await getTempDirectory();
+			let targetPath = PathUtils.join(dir, 'target.sqlite');
+			let linkPath = PathUtils.join(dir, 'link.sqlite');
+			let db = new Zotero.DBConnection(targetPath);
+			await db.queryAsync("PRAGMA journal_mode=WAL");
+			await db.queryAsync("CREATE TABLE foo (a INT)");
+			await db.queryAsync("INSERT INTO foo VALUES (1)");
+			// Capture a non-empty WAL, which lives next to the symlink's target
+			await IOUtils.copy(targetPath, targetPath + '.copy');
+			await IOUtils.copy(targetPath + '-wal', targetPath + '.copy-wal');
+			await db.closeDatabase(true);
+			await IOUtils.move(targetPath + '.copy', targetPath);
+			await IOUtils.move(targetPath + '.copy-wal', targetPath + '-wal');
+			if (!Zotero.File.createSymlink(targetPath, linkPath)) {
+				// Filesystem doesn't support symlinks (e.g., CIFS)
+				this.skip();
+			}
+
+			let db2 = new Zotero.DBConnection(linkPath);
+			assert.isTrue(await db2._downgradeDatabaseFromWAL(linkPath));
+
+			assert.isFalse(await IOUtils.exists(targetPath + '-wal'));
+			let header = await IOUtils.read(targetPath, { maxBytes: 20 });
+			assert.equal(header[18], 1);
+			assert.isTrue(Zotero.File.pathToFile(linkPath).isSymlink());
+			try {
+				assert.equal(await db2.valueQueryAsync("SELECT COUNT(*) FROM foo"), 1);
+			}
+			finally {
+				await db2.closeDatabase();
+			}
+		});
+	});
+			
+
 	describe("#vacuum()", function () {
 		it("should vacuum the database with force option", async function () {
 			let result = await Zotero.DB.vacuum({ force: true });
@@ -1119,3 +1435,9 @@ describe("Zotero.DB", function () {
 		});
 	});
 });
+
+
+
+
+
+
